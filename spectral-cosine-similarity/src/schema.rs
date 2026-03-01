@@ -38,6 +38,7 @@ diesel::table! {
         name -> Text,
         raw_name -> Text,
         source_file -> Text,
+        spectrum_hash -> Text,
         precursor_mz -> Float,
         num_peaks -> Integer,
         peaks -> Text,

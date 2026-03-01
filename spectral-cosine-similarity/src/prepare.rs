@@ -1,5 +1,6 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 use crate::mgf_parser::{parse_mgf, sanitize_name};
@@ -8,6 +9,44 @@ use crate::peaks::Peaks;
 use crate::schema::*;
 
 const MIN_PEAKS: usize = 5;
+const HASH_DECIMALS: usize = 6;
+
+fn canonicalize_component(value: f32) -> String {
+    if !value.is_finite() {
+        return value.to_string().to_ascii_lowercase();
+    }
+
+    let scale = 10f64.powi(HASH_DECIMALS as i32);
+    let mut quantized = ((value as f64) * scale).round() / scale;
+    if quantized == -0.0 {
+        quantized = 0.0;
+    }
+    format!("{quantized:.6}")
+}
+
+fn compute_spectrum_hash(precursor_mz: f32, peaks: &[(f32, f32)]) -> String {
+    let mut sorted = peaks.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+
+    let mut payload = String::new();
+    payload.push_str("pmz=");
+    payload.push_str(&canonicalize_component(precursor_mz));
+    payload.push_str(";n=");
+    payload.push_str(&sorted.len().to_string());
+    payload.push_str(";peaks=");
+
+    for (idx, (mz, intensity)) in sorted.iter().enumerate() {
+        if idx > 0 {
+            payload.push('|');
+        }
+        payload.push_str(&canonicalize_component(*mz));
+        payload.push(':');
+        payload.push_str(&canonicalize_component(*intensity));
+    }
+
+    let digest = Sha256::digest(payload.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// MGF files to process, in order.
 fn mgf_sources() -> Vec<(&'static str, &'static str)> {
@@ -34,15 +73,15 @@ pub fn run_with_sources(
     max_spectra: Option<usize>,
     sources: &[(&Path, &str)],
 ) {
-    // Collect names already in the DB to avoid duplicates.
-    let existing_names: std::collections::HashSet<String> = spectra::table
-        .select(spectra::name)
+    // Collect hashes already in the DB to avoid duplicates.
+    let existing_hashes: std::collections::HashSet<String> = spectra::table
+        .select(spectra::spectrum_hash)
         .load::<String>(conn)
-        .expect("failed to load existing spectrum names")
+        .expect("failed to load existing spectrum hashes")
         .into_iter()
         .collect();
 
-    let total_existing = existing_names.len();
+    let total_existing = existing_hashes.len();
     let mut remaining_budget = max_spectra.map(|max| max.saturating_sub(total_existing));
 
     if let Some(0) = remaining_budget {
@@ -57,7 +96,7 @@ pub fn run_with_sources(
         sources.len()
     );
 
-    let mut seen_names = existing_names;
+    let mut seen_hashes = existing_hashes;
     let mut inserted_total = 0usize;
     let mut processed_sources = 0usize;
 
@@ -70,7 +109,7 @@ pub fn run_with_sources(
 
         let parsed = parse_mgf(mgf_path, MIN_PEAKS);
         let parsed_count = parsed.len();
-        let mut skipped_missing_or_duplicate = 0usize;
+        let mut skipped_hash_duplicates = 0usize;
         let mut inserted_source = 0usize;
         let mut stopped_due_to_max = false;
         let mut batch: Vec<NewSpectrum> = Vec::new();
@@ -83,12 +122,17 @@ pub fn run_with_sources(
                 break;
             }
 
-            let name = sanitize_name(&spec.raw_name);
-            if name.is_empty() || seen_names.contains(&name) {
-                skipped_missing_or_duplicate += 1;
+            let spectrum_hash = compute_spectrum_hash(spec.precursor_mz, &spec.peaks);
+            if seen_hashes.contains(&spectrum_hash) {
+                skipped_hash_duplicates += 1;
                 continue;
             }
-            seen_names.insert(name.clone());
+            seen_hashes.insert(spectrum_hash.clone());
+
+            let mut name = sanitize_name(&spec.raw_name);
+            if name.is_empty() {
+                name = format!("spectrum_{}", &spectrum_hash[..12]);
+            }
 
             let peaks = Peaks(spec.peaks);
             let num_peaks = peaks.0.len() as i32;
@@ -97,27 +141,32 @@ pub fn run_with_sources(
                 name,
                 raw_name: spec.raw_name,
                 source_file: source_label.to_string(),
+                spectrum_hash,
                 precursor_mz: spec.precursor_mz,
                 num_peaks,
                 peaks,
             });
 
-            inserted_source += 1;
             if let Some(ref mut remaining) = remaining_budget {
                 *remaining = remaining.saturating_sub(1);
             }
         }
 
         for chunk in batch.chunks(500) {
-            diesel::insert_into(spectra::table)
-                .values(chunk)
-                .execute(conn)
-                .expect("failed to insert spectra batch");
+            for row in chunk {
+                let inserted = diesel::insert_into(spectra::table)
+                    .values(row)
+                    .on_conflict(spectra::spectrum_hash)
+                    .do_nothing()
+                    .execute(conn)
+                    .expect("failed to insert spectrum row");
+                inserted_source += inserted;
+            }
         }
 
         inserted_total += inserted_source;
         eprintln!(
-            "[prepare] {source_label}: parsed={parsed_count}, skipped={skipped_missing_or_duplicate}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}"
+            "[prepare] {source_label}: parsed={parsed_count}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}"
         );
 
         if stopped_due_to_max {
@@ -146,9 +195,10 @@ mod tests {
         sql_query(
             "CREATE TABLE spectra (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
                 raw_name TEXT NOT NULL,
                 source_file TEXT NOT NULL,
+                spectrum_hash TEXT NOT NULL UNIQUE,
                 precursor_mz REAL NOT NULL,
                 num_peaks INTEGER NOT NULL,
                 peaks TEXT NOT NULL
@@ -166,11 +216,11 @@ mod tests {
         let mut seen = HashSet::new();
 
         for spec in parse_mgf(fixture.as_path(), MIN_PEAKS) {
-            let name = sanitize_name(&spec.raw_name);
-            if name.is_empty() || !seen.insert(name.clone()) {
+            let hash = compute_spectrum_hash(spec.precursor_mz, &spec.peaks);
+            if !seen.insert(hash.clone()) {
                 continue;
             }
-            unique.push((name, spec));
+            unique.push((hash, spec));
         }
 
         unique
@@ -192,13 +242,20 @@ mod tests {
         );
 
         let total_unique = unique_specs.len();
-        let (seed_name, seed_spec) = unique_specs.remove(0);
+        let (seed_hash, seed_spec) = unique_specs.remove(0);
+        let seed_name = sanitize_name(&seed_spec.raw_name);
+        let seed_name = if seed_name.is_empty() {
+            format!("spectrum_{}", &seed_hash[..12])
+        } else {
+            seed_name
+        };
 
         diesel::insert_into(spectra::table)
             .values(NewSpectrum {
                 name: seed_name,
                 raw_name: seed_spec.raw_name,
                 source_file: "pesticides.mgf".to_string(),
+                spectrum_hash: seed_hash,
                 precursor_mz: seed_spec.precursor_mz,
                 num_peaks: seed_spec.peaks.len() as i32,
                 peaks: Peaks(seed_spec.peaks),
@@ -224,5 +281,33 @@ mod tests {
             .first::<i64>(&mut conn)
             .expect("failed to count rows after second run");
         assert_eq!(count_after_second_run, total_unique as i64);
+    }
+
+    #[test]
+    fn spectrum_hash_is_order_invariant_and_quantized() {
+        assert_eq!(
+            canonicalize_component(500.123_456_1),
+            canonicalize_component(500.123_456_2)
+        );
+        assert_ne!(
+            canonicalize_component(500.123_4),
+            canonicalize_component(500.123_5)
+        );
+
+        let h1 = compute_spectrum_hash(
+            500.123_456_1,
+            &[(200.123_456_4, 10.000_000_4), (100.000_000_4, 1.000_000_4)],
+        );
+        let h2 = compute_spectrum_hash(
+            500.123_456_2,
+            &[(100.000_000_4, 1.000_000_4), (200.123_456_4, 10.000_000_4)],
+        );
+        let h3 = compute_spectrum_hash(
+            500.123_456_1,
+            &[(200.123_456_4, 10.000_000_4), (100.000_000_4, 1.100_000_4)],
+        );
+
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
     }
 }

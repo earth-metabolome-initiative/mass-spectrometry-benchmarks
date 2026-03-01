@@ -34,9 +34,10 @@ CREATE TABLE IF NOT EXISTS experiments (
 -- Spectra
 CREATE TABLE IF NOT EXISTS spectra (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
     raw_name TEXT NOT NULL,
     source_file TEXT NOT NULL,
+    spectrum_hash TEXT NOT NULL UNIQUE,
     precursor_mz REAL NOT NULL,
     num_peaks INTEGER NOT NULL,
     peaks TEXT NOT NULL
