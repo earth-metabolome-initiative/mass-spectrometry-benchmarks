@@ -17,7 +17,6 @@ use crate::pair_selection::generate_pairs;
 use crate::progress::StageProgress;
 
 const FLUSH_BATCH: usize = 500;
-const PYTHON_BATCH_SIZE: usize = 50_000;
 const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
 
@@ -157,16 +156,10 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
 
 fn run_matchms_default(max_spectra: Option<usize>) {
     let db = db::db_path(max_spectra);
-    let batch_size = PYTHON_BATCH_SIZE.to_string();
     let mut cmd = std::process::Command::new("uv");
-    cmd.args([
-        "run",
-        "python3",
-        "scripts/python_reference_compute.py",
-        db,
-        &batch_size,
-    ]);
+    cmd.args(["run", "python3", "scripts/python_reference_compute.py", db]);
     if let Some(max_spectra) = max_spectra {
+        cmd.arg("--max-spectra");
         cmd.arg(max_spectra.to_string());
     }
     let status = cmd
