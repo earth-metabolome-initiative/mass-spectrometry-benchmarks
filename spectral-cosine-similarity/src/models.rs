@@ -12,6 +12,7 @@ pub struct Algorithm {
     pub id: i32,
     pub name: String,
     pub description: Option<String>,
+    pub approximates_algorithm_id: Option<i32>,
 }
 
 #[derive(Insertable, Debug)]
@@ -19,6 +20,7 @@ pub struct Algorithm {
 pub struct NewAlgorithm<'a> {
     pub name: &'a str,
     pub description: Option<&'a str>,
+    pub approximates_algorithm_id: Option<i32>,
 }
 
 // --- Libraries ---

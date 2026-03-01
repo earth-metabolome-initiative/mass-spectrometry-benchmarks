@@ -2,7 +2,8 @@
 CREATE TABLE IF NOT EXISTS algorithms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
-    description TEXT
+    description TEXT,
+    approximates_algorithm_id INTEGER REFERENCES algorithms(id)
 ) STRICT;
 
 -- Libraries / packages

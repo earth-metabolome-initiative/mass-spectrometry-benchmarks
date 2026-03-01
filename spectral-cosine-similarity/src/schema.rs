@@ -3,6 +3,7 @@ diesel::table! {
         id -> Integer,
         name -> Text,
         description -> Nullable<Text>,
+        approximates_algorithm_id -> Nullable<Integer>,
     }
 }
 

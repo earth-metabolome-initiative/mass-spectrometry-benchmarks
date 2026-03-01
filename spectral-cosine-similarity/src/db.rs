@@ -65,6 +65,7 @@ pub fn initialize(conn: &mut SqliteConnection) {
                 .unwrap_or_else(|e| panic!("Failed to execute schema statement: {e}\n{trimmed}"));
         }
     }
+    ensure_algorithms_approximation_schema(conn);
     ensure_implementations_reference_schema(conn);
 
     // Seed algorithms (implementation-agnostic)
@@ -89,6 +90,11 @@ pub fn initialize(conn: &mut SqliteConnection) {
         "EntropySimilarityUnweighted",
         Some("Unweighted spectral entropy similarity"),
     );
+    set_algorithm_approximation(conn, cosine_hungarian_id, None);
+    set_algorithm_approximation(conn, cosine_greedy_id, Some(cosine_hungarian_id));
+    set_algorithm_approximation(conn, modified_cosine_id, None);
+    set_algorithm_approximation(conn, entropy_weighted_id, None);
+    set_algorithm_approximation(conn, entropy_unweighted_id, None);
 
     // Seed libraries
     let rust_lib_id = ensure_rust_library(conn);
@@ -119,11 +125,31 @@ pub fn initialize(conn: &mut SqliteConnection) {
     }
 }
 
-fn implementations_has_column(conn: &mut SqliteConnection, column: &str) -> bool {
-    let rows: Vec<TableInfoRow> = sql_query("PRAGMA table_info(implementations)")
+fn table_has_column(conn: &mut SqliteConnection, table: &str, column: &str) -> bool {
+    let pragma = format!("PRAGMA table_info({table})");
+    let rows: Vec<TableInfoRow> = sql_query(pragma)
         .load(conn)
-        .expect("failed to inspect implementations table");
+        .unwrap_or_else(|e| panic!("failed to inspect table '{table}': {e}"));
     rows.iter().any(|r| r.name == column)
+}
+
+fn algorithms_has_column(conn: &mut SqliteConnection, column: &str) -> bool {
+    table_has_column(conn, "algorithms", column)
+}
+
+fn implementations_has_column(conn: &mut SqliteConnection, column: &str) -> bool {
+    table_has_column(conn, "implementations", column)
+}
+
+fn ensure_algorithms_approximation_schema(conn: &mut SqliteConnection) {
+    if !algorithms_has_column(conn, "approximates_algorithm_id") {
+        sql_query(
+            "ALTER TABLE algorithms
+             ADD COLUMN approximates_algorithm_id INTEGER REFERENCES algorithms(id)",
+        )
+        .execute(conn)
+        .expect("failed to add algorithms.approximates_algorithm_id column");
+    }
 }
 
 fn ensure_implementations_reference_schema(conn: &mut SqliteConnection) {
@@ -176,10 +202,28 @@ fn ensure_algorithm(conn: &mut SqliteConnection, name: &str, description: Option
     }
 
     diesel::insert_into(algorithms::table)
-        .values(&NewAlgorithm { name, description })
+        .values(&NewAlgorithm {
+            name,
+            description,
+            approximates_algorithm_id: None,
+        })
         .returning(algorithms::id)
         .get_result::<i32>(conn)
         .expect("failed to insert algorithm")
+}
+
+fn set_algorithm_approximation(
+    conn: &mut SqliteConnection,
+    algorithm_id: i32,
+    approximates_algorithm_id: Option<i32>,
+) {
+    if approximates_algorithm_id == Some(algorithm_id) {
+        panic!("algorithm {algorithm_id} cannot approximate itself");
+    }
+    diesel::update(algorithms::table.filter(algorithms::id.eq(algorithm_id)))
+        .set(algorithms::approximates_algorithm_id.eq(approximates_algorithm_id))
+        .execute(conn)
+        .expect("failed to set algorithm approximation relationship");
 }
 
 fn ensure_rust_library(conn: &mut SqliteConnection) -> i32 {
@@ -567,6 +611,34 @@ source = "git+https://example.com/repo#abc123def"
     }
 
     #[test]
+    fn seeds_cosine_greedy_as_approximation_of_cosine_hungarian() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let cosine_hungarian_id = algorithms::table
+            .filter(algorithms::name.eq("CosineHungarian"))
+            .select(algorithms::id)
+            .first::<i32>(&mut conn)
+            .expect("failed to load CosineHungarian id");
+
+        let cosine_greedy_approx = algorithms::table
+            .filter(algorithms::name.eq("CosineGreedy"))
+            .select(algorithms::approximates_algorithm_id)
+            .first::<Option<i32>>(&mut conn)
+            .expect("failed to load CosineGreedy approximation target");
+
+        assert_eq!(cosine_greedy_approx, Some(cosine_hungarian_id));
+
+        let cosine_hungarian_approx = algorithms::table
+            .filter(algorithms::name.eq("CosineHungarian"))
+            .select(algorithms::approximates_algorithm_id)
+            .first::<Option<i32>>(&mut conn)
+            .expect("failed to load CosineHungarian approximation target");
+
+        assert_eq!(cosine_hungarian_approx, None);
+    }
+
+    #[test]
     fn upgrades_legacy_implementations_table_with_reference_column() {
         let mut conn = setup_in_memory_connection();
         sql_query(
@@ -583,5 +655,29 @@ source = "git+https://example.com/repo#abc123def"
         assert!(!implementations_has_column(&mut conn, "is_reference"));
         ensure_implementations_reference_schema(&mut conn);
         assert!(implementations_has_column(&mut conn, "is_reference"));
+    }
+
+    #[test]
+    fn upgrades_legacy_algorithms_table_with_approximation_column() {
+        let mut conn = setup_in_memory_connection();
+        sql_query(
+            "CREATE TABLE algorithms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT
+            ) STRICT",
+        )
+        .execute(&mut conn)
+        .expect("failed to create legacy algorithms table");
+
+        assert!(!algorithms_has_column(
+            &mut conn,
+            "approximates_algorithm_id"
+        ));
+        ensure_algorithms_approximation_schema(&mut conn);
+        assert!(algorithms_has_column(
+            &mut conn,
+            "approximates_algorithm_id"
+        ));
     }
 }
