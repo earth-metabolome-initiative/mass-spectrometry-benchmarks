@@ -10,6 +10,7 @@ use plotters::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{Float, Integer, Text};
 
+use crate::progress::StageProgress;
 use crate::schema::{algorithms, implementations, libraries, results, spectra};
 
 const BUCKET_BOUNDARIES: &[i32] = &[5, 9, 17, 33, 65, 129, 257, 513];
@@ -123,6 +124,14 @@ fn build_color_map(data: &[ResultRow]) -> HashMap<String, RGBColor> {
         .enumerate()
         .map(|(i, label)| (label, COLORS[i % COLORS.len()]))
         .collect()
+}
+
+fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
+    if let Some(p) = progress.as_deref_mut() {
+        p.set_substep(message);
+    } else {
+        eprintln!("{message}");
+    }
 }
 
 fn load_spectra_peaks(conn: &mut SqliteConnection) -> HashMap<i32, i32> {
@@ -618,7 +627,11 @@ struct ComparisonRow {
     reference_matches: i32,
 }
 
-fn compare_results(conn: &mut SqliteConnection) {
+fn compare_results(conn: &mut SqliteConnection, mut progress: Option<&mut dyn StageProgress>) {
+    emit(
+        &mut progress,
+        "[report] Comparing Rust results against references",
+    );
     let rows: Vec<ComparisonRow> = sql_query(
         "SELECT a.name AS algorithm_name,
                 rl.name AS rust_library,
@@ -648,7 +661,10 @@ fn compare_results(conn: &mut SqliteConnection) {
     .expect("failed to compare results");
 
     if rows.is_empty() {
-        eprintln!("[report] No Rust-vs-reference comparisons available yet.");
+        emit(
+            &mut progress,
+            "[report] No Rust-vs-reference comparisons available yet.",
+        );
         return;
     }
 
@@ -682,25 +698,48 @@ fn compare_results(conn: &mut SqliteConnection) {
 
     let rmse = (sum_sq_score / rows.len() as f64).sqrt();
 
-    eprintln!("[report] Cross-implementation comparison (Rust vs DB-marked reference):");
-    eprintln!("[report]   Pairs compared: {}", rows.len());
-    eprintln!(
-        "[report]   Mismatches: score>1e-6 for all algorithms; matches must also agree for cosine-family algorithms"
-    );
-    eprintln!("[report]   Mismatch count: {mismatch_count}");
-    eprintln!("[report]   Max score diff: {max_score_diff:.6e}");
-    eprintln!("[report]   Max match diff: {max_match_diff}");
-    eprintln!("[report]   RMSE (score): {rmse:.6e}");
+    if progress.is_some() {
+        emit(
+            &mut progress,
+            &format!(
+                "[report] Compared {} pair(s), mismatch_count={mismatch_count}, rmse={rmse:.6e}",
+                rows.len()
+            ),
+        );
+    } else {
+        eprintln!("[report] Cross-implementation comparison (Rust vs DB-marked reference):");
+        eprintln!("[report]   Pairs compared: {}", rows.len());
+        eprintln!(
+            "[report]   Mismatches: score>1e-6 for all algorithms; matches must also agree for cosine-family algorithms"
+        );
+        eprintln!("[report]   Mismatch count: {mismatch_count}");
+        eprintln!("[report]   Max score diff: {max_score_diff:.6e}");
+        eprintln!("[report]   Max match diff: {max_match_diff}");
+        eprintln!("[report]   RMSE (score): {rmse:.6e}");
+    }
 }
 
 pub fn run(conn: &mut SqliteConnection) {
-    run_to_dir(conn, Path::new("output"));
+    run_with_progress(conn, None);
+}
+
+pub fn run_with_progress(conn: &mut SqliteConnection, progress: Option<&mut dyn StageProgress>) {
+    run_to_dir_with_progress(conn, Path::new("output"), progress);
 }
 
 pub fn run_to_dir(conn: &mut SqliteConnection, output_dir: &Path) {
-    eprintln!("[report] Generating charts...");
+    run_to_dir_with_progress(conn, output_dir, None);
+}
+
+pub fn run_to_dir_with_progress(
+    conn: &mut SqliteConnection,
+    output_dir: &Path,
+    mut progress: Option<&mut dyn StageProgress>,
+) {
+    emit(&mut progress, "[report] Generating charts");
     fs::create_dir_all(output_dir).expect("failed to create output directory");
 
+    emit(&mut progress, "[report] Loading result data");
     let spectra_peaks = load_spectra_peaks(conn);
     let data = load_result_data(conn);
     let references = algorithm_references(&data);
@@ -708,21 +747,29 @@ pub fn run_to_dir(conn: &mut SqliteConnection, output_dir: &Path) {
 
     let timing_chart = build_timing_chart(&data, &spectra_peaks, &color_map, &references);
     if !timing_chart.facets.is_empty() {
+        emit(&mut progress, "[report] Rendering timing chart");
         let timing_path = output_dir.join("timing_by_peaks.svg");
         render_faceted_line_chart(&timing_chart, timing_path.to_string_lossy().as_ref())
             .expect("failed to render timing chart");
-        eprintln!("[report] Written {}", timing_path.display());
+        emit(
+            &mut progress,
+            &format!("[report] Written {}", timing_path.display()),
+        );
     }
 
     let mse_chart = build_mse_chart(&data, &spectra_peaks, &color_map, &references);
     if !mse_chart.facets.is_empty() {
+        emit(&mut progress, "[report] Rendering MSE chart");
         let mse_path = output_dir.join("mse_score_by_peaks.svg");
         render_faceted_line_chart(&mse_chart, mse_path.to_string_lossy().as_ref())
             .expect("failed to render MSE chart");
-        eprintln!("[report] Written {}", mse_path.display());
+        emit(
+            &mut progress,
+            &format!("[report] Written {}", mse_path.display()),
+        );
     }
 
-    compare_results(conn);
+    compare_results(conn, progress);
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::mgf_parser::{parse_mgf, sanitize_name};
 use crate::models::*;
 use crate::peaks::Peaks;
+use crate::progress::StageProgress;
 use crate::schema::*;
 
 const MIN_PEAKS: usize = 5;
@@ -57,14 +58,31 @@ fn mgf_sources() -> Vec<(&'static str, &'static str)> {
     sources
 }
 
+fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
+    if let Some(p) = progress.as_deref_mut() {
+        p.set_substep(message);
+    } else {
+        eprintln!("{message}");
+    }
+}
+
 /// Parse MGF files and insert spectra into the database.
 pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
+    run_with_progress(conn, max_spectra, None);
+}
+
+/// Parse MGF files and insert spectra into the database with optional progress updates.
+pub fn run_with_progress(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    progress: Option<&mut dyn StageProgress>,
+) {
     let raw_sources = mgf_sources();
     let sources: Vec<(&Path, &str)> = raw_sources
         .iter()
         .map(|(path, source_label)| (Path::new(*path), *source_label))
         .collect();
-    run_with_sources(conn, max_spectra, &sources);
+    run_with_sources_with_progress(conn, max_spectra, &sources, progress);
 }
 
 /// Parse explicit MGF sources and insert spectra into the database.
@@ -72,6 +90,16 @@ pub fn run_with_sources(
     conn: &mut SqliteConnection,
     max_spectra: Option<usize>,
     sources: &[(&Path, &str)],
+) {
+    run_with_sources_with_progress(conn, max_spectra, sources, None);
+}
+
+/// Parse explicit MGF sources and insert spectra into the database with optional progress updates.
+pub fn run_with_sources_with_progress(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    sources: &[(&Path, &str)],
+    mut progress: Option<&mut dyn StageProgress>,
 ) {
     // Collect hashes already in the DB to avoid duplicates.
     let existing_hashes: std::collections::HashSet<String> = spectra::table
@@ -87,14 +115,21 @@ pub fn run_with_sources(
 
     if let Some(0) = remaining_budget {
         let max = max_spectra.expect("remaining_budget is Some only when max_spectra is set");
-        eprintln!("[prepare] {total_existing} spectra already in DB (max {max}), nothing to load");
+        emit(
+            &mut progress,
+            &format!(
+                "[prepare] {total_existing} spectra already in DB (max {max}), nothing to load"
+            ),
+        );
         return;
     }
 
-    eprintln!(
-        "[prepare] {} spectra already in DB, scanning {} source(s) for missing spectra...",
-        total_existing,
-        sources.len()
+    emit(
+        &mut progress,
+        &format!(
+            "[prepare] {total_existing} spectra already in DB, scanning {} source(s) for missing spectra...",
+            sources.len()
+        ),
     );
 
     let mut seen_hashes = existing_hashes;
@@ -103,10 +138,17 @@ pub fn run_with_sources(
 
     for (mgf_path, source_label) in sources {
         if !mgf_path.exists() {
-            eprintln!("[prepare] Skipping {} (not found)", mgf_path.display());
+            emit(
+                &mut progress,
+                &format!("[prepare] Skipping {} (not found)", mgf_path.display()),
+            );
             continue;
         }
         processed_sources += 1;
+        emit(
+            &mut progress,
+            &format!("[prepare] Parsing {}", mgf_path.display()),
+        );
 
         let parsed = parse_mgf(mgf_path, MIN_PEAKS);
         let parsed_count = parsed.len();
@@ -166,8 +208,11 @@ pub fn run_with_sources(
         }
 
         inserted_total += inserted_source;
-        eprintln!(
-            "[prepare] {source_label}: parsed={parsed_count}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}"
+        emit(
+            &mut progress,
+            &format!(
+                "[prepare] {source_label}: parsed={parsed_count}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}"
+            ),
         );
 
         if stopped_due_to_max {
@@ -176,10 +221,13 @@ pub fn run_with_sources(
     }
 
     if processed_sources == 0 {
-        eprintln!("[prepare] No source files were available");
+        emit(&mut progress, "[prepare] No source files were available");
     }
 
-    eprintln!("[prepare] Inserted {inserted_total} new spectra");
+    emit(
+        &mut progress,
+        &format!("[prepare] Inserted {inserted_total} new spectra"),
+    );
 }
 
 #[cfg(test)]

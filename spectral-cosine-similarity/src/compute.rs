@@ -12,11 +12,19 @@ use mass_spectrometry::prelude::*;
 use crate::db;
 use crate::models::*;
 use crate::pair_selection::generate_pairs;
+use crate::progress::StageProgress;
 use crate::report;
 
 const FLUSH_BATCH: usize = 500;
 const CHART_UPDATE_INTERVAL: usize = 50_000;
+const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
+const RUST_ALGORITHMS: [&str; 4] = [
+    "CosineHungarian",
+    "ModifiedCosine",
+    "EntropySimilarityWeighted",
+    "EntropySimilarityUnweighted",
+];
 
 struct ComputeContext {
     experiments: Vec<Experiment>,
@@ -24,18 +32,59 @@ struct ComputeContext {
     id_pairs: Vec<(i32, i32)>,
 }
 
+fn set_substep(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
+    if let Some(p) = progress.as_deref_mut() {
+        p.set_substep(message);
+    } else {
+        eprintln!("{message}");
+    }
+}
+
+fn clear_substep(progress: &mut Option<&mut dyn StageProgress>) {
+    if let Some(p) = progress.as_deref_mut() {
+        p.clear_substep();
+    }
+}
+
+fn inc_progress(progress: &mut Option<&mut dyn StageProgress>, units: u64) {
+    if let Some(p) = progress.as_deref_mut() {
+        p.inc(units);
+    }
+}
+
 /// Compute similarities and timings for all implementations in a single pass,
 /// interleaving Rust and Python in batches so that charts stay up to date.
 pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
-    run_with_matchms(conn, max_spectra, run_matchms_default);
+    run_with_progress(conn, max_spectra, None);
+}
+
+pub fn run_with_progress(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    progress: Option<&mut dyn StageProgress>,
+) {
+    run_with_matchms_and_progress(conn, max_spectra, run_matchms_default, progress);
 }
 
 pub fn run_with_matchms<F>(conn: &mut SqliteConnection, max_spectra: Option<usize>, run_matchms: F)
 where
     F: Fn(Option<usize>),
 {
-    compute_all(conn, max_spectra, &run_matchms);
+    run_with_matchms_and_progress(conn, max_spectra, run_matchms, None);
+}
+
+pub fn run_with_matchms_and_progress<F>(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    run_matchms: F,
+    mut progress: Option<&mut dyn StageProgress>,
+) where
+    F: Fn(Option<usize>),
+{
+    compute_all(conn, max_spectra, &run_matchms, &mut progress);
+    set_substep(&mut progress, "[compute] Building timing summary");
     print_timing_report(conn);
+    clear_substep(&mut progress);
 }
 
 fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
@@ -52,27 +101,82 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
 }
 
 fn run_matchms_default(max_spectra: Option<usize>) {
-    eprintln!("[compute] Running matchms...");
     let db = db::db_path(max_spectra);
     let batch_size = CHART_UPDATE_INTERVAL.to_string();
     let status = std::process::Command::new("uv")
         .args([
             "run",
             "python3",
-            "scripts/matchms_compute.py",
+            "scripts/python_reference_compute.py",
             db,
             &batch_size,
         ])
         .status()
-        .expect("failed to run matchms_compute.py");
+        .expect("failed to run python_reference_compute.py");
 
     if !status.success() {
         panic!(
-            "[compute] matchms_compute.py exited with {status}. \
+            "[compute] python_reference_compute.py exited with {status}. \
 Install Python benchmark dependencies with `uv sync` in spectral-cosine-similarity/ \
 and ensure both `matchms` and `ms_entropy` import successfully."
         );
     }
+}
+
+fn count_results_for_implementation(conn: &mut SqliteConnection, implementation_id: i32) -> i64 {
+    crate::schema::results::table
+        .filter(crate::schema::results::implementation_id.eq(implementation_id))
+        .select(diesel::dsl::count_star())
+        .first::<i64>(conn)
+        .expect("failed to count implementation results")
+}
+
+fn reference_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
+    crate::schema::implementations::table
+        .filter(crate::schema::implementations::is_reference.eq(true))
+        .order(crate::schema::implementations::id.asc())
+        .select(crate::schema::implementations::id)
+        .load(conn)
+        .expect("failed to load reference implementations")
+}
+
+fn count_reference_results(conn: &mut SqliteConnection) -> i64 {
+    reference_implementation_ids(conn)
+        .into_iter()
+        .map(|implementation_id| count_results_for_implementation(conn, implementation_id))
+        .sum()
+}
+
+/// Estimate remaining compute workload units.
+///
+/// One unit is one `(left_id, right_id, experiment_id, implementation_id)` result row
+/// that still needs to be produced by either Rust or Python/reference implementations.
+pub fn estimate_remaining_work(conn: &mut SqliteConnection) -> u64 {
+    let context = load_compute_context(conn);
+    let expected_per_implementation = context
+        .id_pairs
+        .len()
+        .saturating_mul(context.experiments.len()) as i64;
+    if expected_per_implementation == 0 {
+        return 0;
+    }
+
+    let mut rust_remaining: u64 = 0;
+    for algorithm_name in RUST_ALGORITHMS {
+        let implementation_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
+        let existing = count_results_for_implementation(conn, implementation_id);
+        rust_remaining += expected_per_implementation.saturating_sub(existing) as u64;
+    }
+
+    let reference_remaining: u64 = reference_implementation_ids(conn)
+        .into_iter()
+        .map(|implementation_id| {
+            let existing = count_results_for_implementation(conn, implementation_id);
+            expected_per_implementation.saturating_sub(existing) as u64
+        })
+        .sum();
+
+    rust_remaining + reference_remaining
 }
 
 fn load_compute_context(conn: &mut SqliteConnection) -> ComputeContext {
@@ -103,6 +207,7 @@ fn compute_rust_algorithm<F, B, S>(
     algorithm_name: &str,
     max_spectra: Option<usize>,
     run_matchms: &F,
+    progress: &mut Option<&mut dyn StageProgress>,
     build_similarity: B,
 ) -> usize
 where
@@ -145,19 +250,31 @@ where
     }
 
     if work.is_empty() {
-        eprintln!("[compute] {algorithm_name} (Rust): nothing to compute");
+        set_substep(
+            progress,
+            &format!("[compute] {algorithm_name} (Rust): nothing to compute"),
+        );
         return 0;
     }
 
-    eprintln!("[compute] {algorithm_name} (Rust): {} pairs...", work.len());
-
-    let pb = ProgressBar::new(work.len() as u64);
-    pb.set_style(
-        ProgressStyle::with_template(&format!(
-            "[compute] {algorithm_name} (Rust) {{bar:40}} {{pos}}/{{len}} [{{eta}}]"
-        ))
-        .unwrap(),
+    set_substep(
+        progress,
+        &format!("[compute] {algorithm_name} (Rust): 0/{}", work.len()),
     );
+    let work_len = work.len();
+
+    let pb = if progress.is_none() {
+        let pb = ProgressBar::new(work.len() as u64);
+        pb.set_style(
+            ProgressStyle::with_template(&format!(
+                "[compute] {algorithm_name} (Rust) {{bar:40}} {{pos}}/{{len}} [{{eta}}]"
+            ))
+            .expect("invalid compute progress style"),
+        );
+        Some(pb)
+    } else {
+        None
+    };
 
     let mut batch: Vec<NewResult> = Vec::with_capacity(FLUSH_BATCH);
     let mut total_done: usize = 0;
@@ -205,35 +322,71 @@ where
         });
 
         total_done += 1;
+        inc_progress(progress, 1);
 
         if batch.len() >= FLUSH_BATCH {
             flush_results(conn, &mut batch);
 
             if total_done >= next_chart_update {
                 next_chart_update = total_done + CHART_UPDATE_INTERVAL;
-                pb.suspend(|| {
+                set_substep(progress, "[compute] Running Python references");
+                let before_reference = count_reference_results(conn);
+                if let Some(pb) = pb.as_ref() {
+                    pb.suspend(|| {
+                        run_matchms(max_spectra);
+                    });
+                } else {
                     run_matchms(max_spectra);
-                });
-                report::run(conn);
+                }
+                let after_reference = count_reference_results(conn);
+                let added_reference_rows = after_reference.saturating_sub(before_reference);
+                inc_progress(progress, added_reference_rows as u64);
+
+                set_substep(progress, "[compute] Refreshing report charts");
+                if progress.is_some() {
+                    let report_progress =
+                        progress.as_deref_mut().map(|p| p as &mut dyn StageProgress);
+                    report::run_with_progress(conn, report_progress);
+                } else {
+                    report::run(conn);
+                }
             }
         }
 
-        pb.inc(1);
+        if let Some(pb) = pb.as_ref() {
+            pb.inc(1);
+        } else if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL) {
+            set_substep(
+                progress,
+                &format!("[compute] {algorithm_name} (Rust): {total_done}/{work_len}",),
+            );
+        }
     }
 
     flush_results(conn, &mut batch);
-    pb.finish_and_clear();
+    if let Some(pb) = pb {
+        pb.finish_and_clear();
+    }
 
-    eprintln!("[compute] {algorithm_name} (Rust): {total_done} pairs computed");
+    set_substep(
+        progress,
+        &format!("[compute] {algorithm_name} (Rust): {total_done} pairs computed"),
+    );
 
     total_done
 }
 
-fn compute_all<F>(conn: &mut SqliteConnection, max_spectra: Option<usize>, run_matchms: &F)
-where
+fn compute_all<F>(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    run_matchms: &F,
+    progress: &mut Option<&mut dyn StageProgress>,
+) where
     F: Fn(Option<usize>),
 {
     let context = load_compute_context(conn);
+
+    set_substep(progress, "[compute] Starting Rust algorithms");
 
     compute_rust_algorithm(
         conn,
@@ -241,6 +394,7 @@ where
         "CosineHungarian",
         max_spectra,
         run_matchms,
+        progress,
         |params| ExactCosine::new(params.mz_power, params.intensity_power, params.tolerance),
     );
     compute_rust_algorithm(
@@ -249,6 +403,7 @@ where
         "ModifiedCosine",
         max_spectra,
         run_matchms,
+        progress,
         |params| ModifiedCosine::new(params.mz_power, params.intensity_power, params.tolerance),
     );
     compute_rust_algorithm(
@@ -257,6 +412,7 @@ where
         "EntropySimilarityWeighted",
         max_spectra,
         run_matchms,
+        progress,
         |params| EntropySimilarity::weighted(params.tolerance),
     );
     compute_rust_algorithm(
@@ -265,11 +421,17 @@ where
         "EntropySimilarityUnweighted",
         max_spectra,
         run_matchms,
+        progress,
         |params| EntropySimilarity::unweighted(params.tolerance),
     );
 
     // Final matchms run to catch any remaining work
+    set_substep(progress, "[compute] Final Python reference pass");
+    let before_reference = count_reference_results(conn);
     run_matchms(max_spectra);
+    let after_reference = count_reference_results(conn);
+    let added_reference_rows = after_reference.saturating_sub(before_reference);
+    inc_progress(progress, added_reference_rows as u64);
 }
 
 fn print_timing_report(conn: &mut SqliteConnection) {

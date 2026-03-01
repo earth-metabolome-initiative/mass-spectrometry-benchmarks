@@ -4,6 +4,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
+use crate::progress::StageProgress;
+
 const GNPS_URL: &str = "https://external.gnps2.org/gnpslibrary/GNPS-LIBRARY.mgf";
 const MGF_PATH: &str = "fixtures/GNPS-LIBRARY.mgf";
 const MGF_PART_PATH: &str = "fixtures/GNPS-LIBRARY.mgf.part";
@@ -30,31 +32,54 @@ fn has_expected_checksum(path: &Path) -> std::io::Result<bool> {
     Ok(sha256_hex(path)? == GNPS_SHA256)
 }
 
+fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
+    if let Some(p) = progress.as_deref_mut() {
+        p.set_substep(message);
+    } else {
+        eprintln!("{message}");
+    }
+}
+
 /// Download GNPS-LIBRARY.mgf with an atomic `.part` file and checksum verification.
 pub fn run(allow_unverified_download: bool) {
+    run_with_progress(allow_unverified_download, None);
+}
+
+/// Download GNPS-LIBRARY.mgf with optional progress updates.
+pub fn run_with_progress(
+    allow_unverified_download: bool,
+    mut progress: Option<&mut dyn StageProgress>,
+) {
     let final_path = Path::new(MGF_PATH);
     let part_path = Path::new(MGF_PART_PATH);
 
     if part_path.exists() {
-        eprintln!("[download] Removing stale partial file {}", MGF_PART_PATH);
+        emit(
+            &mut progress,
+            &format!("[download] Removing stale partial file {MGF_PART_PATH}"),
+        );
         std::fs::remove_file(part_path).unwrap_or_else(|e| {
             panic!("failed to remove stale partial file {}: {e}", MGF_PART_PATH)
         });
     }
 
     if final_path.exists() {
+        emit(
+            &mut progress,
+            &format!("[download] Checking checksum for existing {MGF_PATH}"),
+        );
         match has_expected_checksum(final_path) {
             Ok(true) => {
-                eprintln!(
-                    "[download] {} already present and checksum verified, skipping",
-                    MGF_PATH
+                emit(
+                    &mut progress,
+                    &format!("[download] {MGF_PATH} already verified, skipping"),
                 );
                 return;
             }
             Ok(false) => {
-                eprintln!(
-                    "[download] Existing {} failed checksum; redownloading",
-                    MGF_PATH
+                emit(
+                    &mut progress,
+                    &format!("[download] Existing {MGF_PATH} failed checksum; redownloading"),
                 );
                 std::fs::remove_file(final_path).unwrap_or_else(|e| {
                     panic!("failed to remove invalid existing {}: {e}", MGF_PATH)
@@ -73,9 +98,9 @@ pub fn run(allow_unverified_download: bool) {
         }
     }
 
-    eprintln!(
-        "[download] Downloading GNPS-LIBRARY.mgf to {}",
-        MGF_PART_PATH
+    emit(
+        &mut progress,
+        &format!("[download] Downloading GNPS-LIBRARY.mgf to {MGF_PART_PATH}"),
     );
 
     let client = reqwest::blocking::Client::builder()
@@ -117,6 +142,7 @@ pub fn run(allow_unverified_download: bool) {
         .sync_all()
         .unwrap_or_else(|e| panic!("failed to sync {}: {e}", MGF_PART_PATH));
 
+    emit(&mut progress, "[download] Verifying checksum");
     let verified = has_expected_checksum(part_path)
         .unwrap_or_else(|e| panic!("failed to verify checksum for {}: {e}", MGF_PART_PATH));
     if !verified && !allow_unverified_download {
@@ -139,10 +165,12 @@ pub fn run(allow_unverified_download: bool) {
     std::fs::rename(part_path, final_path)
         .unwrap_or_else(|e| panic!("failed to promote {} -> {}: {e}", MGF_PART_PATH, MGF_PATH));
 
-    eprintln!(
-        "[download] Saved {} ({:.1} MB)",
-        MGF_PATH,
-        total as f64 / 1_048_576.0
+    emit(
+        &mut progress,
+        &format!(
+            "[download] Saved {MGF_PATH} ({:.1} MB)",
+            total as f64 / 1_048_576.0
+        ),
     );
 }
 

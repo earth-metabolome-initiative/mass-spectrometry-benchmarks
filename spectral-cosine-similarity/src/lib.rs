@@ -6,5 +6,6 @@ pub mod models;
 pub mod pair_selection;
 pub mod peaks;
 pub mod prepare;
+pub mod progress;
 pub mod report;
 pub mod schema;
