@@ -1,3 +1,4 @@
+pub mod benchmark_topology;
 pub mod compute;
 pub mod db;
 pub mod download;

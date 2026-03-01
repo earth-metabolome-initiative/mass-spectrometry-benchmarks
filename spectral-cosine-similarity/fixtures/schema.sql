@@ -65,3 +65,25 @@ CREATE TABLE IF NOT EXISTS results (
 CREATE INDEX IF NOT EXISTS idx_results_impl ON results(implementation_id);
 CREATE INDEX IF NOT EXISTS idx_results_left ON results(left_id);
 CREATE INDEX IF NOT EXISTS idx_results_right ON results(right_id);
+CREATE INDEX IF NOT EXISTS idx_results_impl_pair_exp
+ON results(implementation_id, left_id, right_id, experiment_id);
+CREATE INDEX IF NOT EXISTS idx_results_pair_exp_impl
+ON results(left_id, right_id, experiment_id, implementation_id);
+
+-- Canonical/reference topology derived from schema regularities.
+CREATE VIEW IF NOT EXISTS v_implementation_topology AS
+SELECT i.id AS implementation_id,
+       a.name AS algorithm_name,
+       COALESCE(parent.name, a.name) AS canonical_algorithm_name,
+       l.name AS library_name,
+       l.language AS library_language,
+       i.is_reference AS is_reference,
+       refi.id AS canonical_reference_implementation_id,
+       refl.name AS canonical_reference_library_name
+FROM implementations i
+JOIN algorithms a ON i.algorithm_id = a.id
+LEFT JOIN algorithms parent ON parent.id = a.approximates_algorithm_id
+JOIN libraries l ON i.library_id = l.id
+LEFT JOIN implementations refi ON refi.algorithm_id = COALESCE(parent.id, a.id)
+                             AND refi.is_reference = 1
+LEFT JOIN libraries refl ON refl.id = refi.library_id;

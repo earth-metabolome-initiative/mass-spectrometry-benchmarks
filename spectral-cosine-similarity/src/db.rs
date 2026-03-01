@@ -65,8 +65,12 @@ pub fn initialize(conn: &mut SqliteConnection) {
                 let is_legacy_reference_index_statement = trimmed
                     .contains("idx_implementations_one_reference_per_algorithm")
                     && err_msg.contains("no such column: is_reference");
+                let is_legacy_topology_view_statement = trimmed
+                    .contains("v_implementation_topology")
+                    && (err_msg.contains("no such column: i.is_reference")
+                        || err_msg.contains("no such column: a.approximates_algorithm_id"));
 
-                if !is_legacy_reference_index_statement {
+                if !is_legacy_reference_index_statement && !is_legacy_topology_view_statement {
                     panic!("Failed to execute schema statement: {e}\n{trimmed}");
                 }
             }
