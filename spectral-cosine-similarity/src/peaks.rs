@@ -44,7 +44,8 @@ impl Peaks {
             }
         });
 
-        let mut spectrum = GenericSpectrum::<f32, f32>::with_capacity(precursor_mz, sorted.len());
+        let mut spectrum = GenericSpectrum::<f32, f32>::with_capacity(precursor_mz, sorted.len())
+            .expect("failed to create GenericSpectrum with reserved peak capacity");
         for &(mz, intensity) in &sorted {
             spectrum
                 .add_peak(mz, intensity)
