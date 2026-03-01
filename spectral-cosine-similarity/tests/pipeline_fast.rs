@@ -25,10 +25,10 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
         let status = Command::new("uv")
             .current_dir(&manifest_dir)
             .env("UV_CACHE_DIR", &uv_cache_for_first_run)
-            .args(["run", "python3", "scripts/matchms_compute.py", &db_path])
+            .args(["run", "python3", "scripts/python_reference_compute.py", &db_path])
             .status()
-            .expect("failed to run matchms compute script");
-        assert!(status.success(), "matchms compute script failed: {status}");
+            .expect("failed to run python reference compute script");
+        assert!(status.success(), "python reference compute script failed: {status}");
     });
 
     let output_dir = TempDir::new().expect("failed to create temporary output directory");
@@ -68,10 +68,10 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
         let status = Command::new("uv")
             .current_dir(&manifest_dir)
             .env("UV_CACHE_DIR", &uv_cache_for_second_run)
-            .args(["run", "python3", "scripts/matchms_compute.py", &db_path])
+            .args(["run", "python3", "scripts/python_reference_compute.py", &db_path])
             .status()
-            .expect("failed to run matchms compute script");
-        assert!(status.success(), "matchms compute script failed: {status}");
+            .expect("failed to run python reference compute script");
+        assert!(status.success(), "python reference compute script failed: {status}");
     });
 
     let results_count_after_rerun = results::table
