@@ -36,8 +36,8 @@ jobs:
         run: cargo check --locked
       - name: Lint (strict)
         run: cargo clippy --all-targets -- -D warnings
-      - name: Build tests
-        run: cargo test --no-run --locked
+      - name: Run tests
+        run: cargo test --locked
 
   python-quality:
     name: Python quality
@@ -47,6 +47,7 @@ jobs:
         working-directory: spectral-cosine-similarity
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -56,3 +57,5 @@ jobs:
         run: python3 -m compileall -q scripts
       - name: Import smoke check
         run: uv run python3 -c "import matchms"
+      - name: Tiny pipeline integration test
+        run: cargo test --locked --features python-tests --test pipeline_fast
