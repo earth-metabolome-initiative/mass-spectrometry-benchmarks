@@ -1,7 +1,9 @@
 use plotters::prelude::RGBColor;
 
 pub(crate) const BUCKET_BOUNDARIES: &[i32] = &[5, 9, 17, 33, 65, 129, 257, 513, 1024, 2048];
-pub(crate) const MSE_LOG_FLOOR: f64 = 1e-16;
+pub(crate) const RMSE_LOG_FLOOR: f64 = 1e-16;
+#[cfg(test)]
+pub(crate) const MSE_LOG_FLOOR: f64 = RMSE_LOG_FLOOR;
 
 pub(crate) const LIBRARY_COLORS: [RGBColor; 10] = [
     RGBColor(82, 154, 220),  // pastel blue
@@ -16,12 +18,14 @@ pub(crate) const LIBRARY_COLORS: [RGBColor; 10] = [
     RGBColor(145, 185, 102), // pastel lime
 ];
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct AlgorithmReference {
     pub(crate) implementation_id: i32,
     pub(crate) label: String,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct ResultRow {
     pub(crate) implementation_id: i32,
@@ -71,6 +75,17 @@ pub(crate) struct FacetedLineChart {
     pub(crate) bucket_labels: Vec<String>,
     pub(crate) facets: Vec<FacetChart>,
     pub(crate) log_y: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AggregatedSeriesPoint {
+    pub(crate) facet_label: String,
+    pub(crate) series_label: String,
+    pub(crate) library_name: String,
+    pub(crate) bucket_index: usize,
+    pub(crate) value: f64,
+    pub(crate) std_dev: f64,
+    pub(crate) count: usize,
 }
 
 pub(crate) fn algorithm_uses_match_count_parity(algorithm: &str) -> bool {

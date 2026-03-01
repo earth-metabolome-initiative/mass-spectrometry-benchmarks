@@ -14,19 +14,21 @@ use diesel::sqlite::SqliteConnection;
 
 use crate::progress::StageProgress;
 
-use aggregate::{MetricKind, build_metric_chart, omit_empty_buckets};
-use data::{
-    algorithm_references, load_algorithm_canonical_map, load_result_data, load_spectra_peaks,
-};
+#[cfg(test)]
+use aggregate::build_metric_chart;
+use aggregate::{MetricKind, build_metric_chart_from_aggregates, omit_empty_buckets};
+use data::{load_rmse_aggregate_rows, load_timing_aggregate_rows, series_pairs_from_aggregates};
 use markdown::write_markdown_tables;
 use render::render_faceted_line_chart;
-use style::build_series_style_map;
-use types::{FacetedLineChart, ResultRow};
+use style::build_series_style_map_from_pairs;
+use types::FacetedLineChart;
+#[cfg(test)]
+use types::ResultRow;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactNames {
     pub timing_svg: String,
-    pub mse_svg: String,
+    pub rmse_svg: String,
     pub markdown: String,
 }
 
@@ -34,7 +36,7 @@ impl Default for ArtifactNames {
     fn default() -> Self {
         Self {
             timing_svg: "timing.svg".to_string(),
-            mse_svg: "mse.svg".to_string(),
+            rmse_svg: "rmse.svg".to_string(),
             markdown: "tables.md".to_string(),
         }
     }
@@ -62,7 +64,7 @@ impl Default for ReportConfig {
 #[derive(Clone, Debug)]
 pub struct ReportArtifacts {
     pub timing_svg: Option<PathBuf>,
-    pub mse_svg: Option<PathBuf>,
+    pub rmse_svg: Option<PathBuf>,
     pub markdown: PathBuf,
 }
 
@@ -82,6 +84,7 @@ fn remove_file_if_exists(path: &Path) {
     }
 }
 
+#[cfg(test)]
 fn build_timing_chart(
     data: &[ResultRow],
     spectra_peaks: &std::collections::HashMap<i32, i32>,
@@ -97,13 +100,14 @@ fn build_timing_chart(
     )
 }
 
+#[cfg(test)]
 fn build_mse_chart(
     data: &[ResultRow],
     spectra_peaks: &std::collections::HashMap<i32, i32>,
     style_map: &std::collections::HashMap<String, types::SeriesStyle>,
     references: &std::collections::HashMap<String, types::AlgorithmReference>,
 ) -> FacetedLineChart {
-    build_metric_chart(MetricKind::Mse, data, spectra_peaks, style_map, references)
+    build_metric_chart(MetricKind::Rmse, data, spectra_peaks, style_map, references)
 }
 
 fn render_chart_artifact(
@@ -135,19 +139,23 @@ pub fn generate(
     emit(&mut progress, "[report] Generating charts");
     fs::create_dir_all(&cfg.output_dir).expect("failed to create output directory");
 
-    emit(&mut progress, "[report] Loading result data");
-    let spectra_peaks = load_spectra_peaks(conn);
-    let data = load_result_data(conn);
-    let canonical_algorithm_map = load_algorithm_canonical_map(conn);
-    let references = algorithm_references(&data, &canonical_algorithm_map);
-    let style_map = build_series_style_map(&data);
+    emit(&mut progress, "[report] Loading aggregated result data");
+    let timing_rows = load_timing_aggregate_rows(conn);
+    let rmse_rows = load_rmse_aggregate_rows(conn);
+    let mut series_pairs = series_pairs_from_aggregates(&timing_rows);
+    series_pairs.extend(series_pairs_from_aggregates(&rmse_rows));
+    series_pairs.sort();
+    series_pairs.dedup();
+    let style_map = build_series_style_map_from_pairs(&series_pairs);
 
-    let mut timing_chart = build_timing_chart(&data, &spectra_peaks, &style_map, &references);
-    let mut mse_chart = build_mse_chart(&data, &spectra_peaks, &style_map, &references);
+    let mut timing_chart =
+        build_metric_chart_from_aggregates(MetricKind::Timing, &timing_rows, &style_map);
+    let mut rmse_chart =
+        build_metric_chart_from_aggregates(MetricKind::Rmse, &rmse_rows, &style_map);
 
     if cfg.prune_empty_buckets {
         timing_chart = omit_empty_buckets(timing_chart);
-        mse_chart = omit_empty_buckets(mse_chart);
+        rmse_chart = omit_empty_buckets(rmse_chart);
     }
 
     let timing_path = cfg.output_dir.join(&cfg.artifact_names.timing_svg);
@@ -158,16 +166,16 @@ pub fn generate(
         "[report] Rendering timing chart",
     );
 
-    let mse_path = cfg.output_dir.join(&cfg.artifact_names.mse_svg);
-    let mse_svg = render_chart_artifact(
-        &mse_chart,
-        &mse_path,
+    let rmse_path = cfg.output_dir.join(&cfg.artifact_names.rmse_svg);
+    let rmse_svg = render_chart_artifact(
+        &rmse_chart,
+        &rmse_path,
         &mut progress,
-        "[report] Rendering MSE chart",
+        "[report] Rendering RMSE chart",
     );
 
     let markdown_path = cfg.output_dir.join(&cfg.artifact_names.markdown);
-    write_markdown_tables(&markdown_path, &[&timing_chart, &mse_chart]);
+    write_markdown_tables(&markdown_path, &[&timing_chart, &rmse_chart]);
     emit(
         &mut progress,
         &format!("[report] Written {}", markdown_path.display()),
@@ -179,42 +187,9 @@ pub fn generate(
 
     ReportArtifacts {
         timing_svg,
-        mse_svg,
+        rmse_svg,
         markdown: markdown_path,
     }
-}
-
-fn legacy_artifact_names() -> ArtifactNames {
-    ArtifactNames {
-        timing_svg: "timing_by_peaks.svg".to_string(),
-        mse_svg: "mse_score_by_peaks.svg".to_string(),
-        markdown: "tables_by_peaks.md".to_string(),
-    }
-}
-
-pub fn run(conn: &mut SqliteConnection) {
-    run_with_progress(conn, None);
-}
-
-pub fn run_with_progress(conn: &mut SqliteConnection, progress: Option<&mut dyn StageProgress>) {
-    run_to_dir_with_progress(conn, Path::new("output"), progress);
-}
-
-pub fn run_to_dir(conn: &mut SqliteConnection, output_dir: &Path) {
-    run_to_dir_with_progress(conn, output_dir, None);
-}
-
-pub fn run_to_dir_with_progress(
-    conn: &mut SqliteConnection,
-    output_dir: &Path,
-    progress: Option<&mut dyn StageProgress>,
-) {
-    let config = ReportConfig {
-        output_dir: output_dir.to_path_buf(),
-        artifact_names: legacy_artifact_names(),
-        ..ReportConfig::default()
-    };
-    let _ = generate(conn, &config, progress);
 }
 
 #[cfg(test)]
@@ -589,7 +564,7 @@ mod tests {
         assert_eq!(non_zero_points.len(), 1);
         let (mse, count) = non_zero_points[0];
         assert_eq!(count, 1);
-        assert!((mse - 0.01).abs() < 1e-6);
+        assert!((mse - 0.1).abs() < 1e-6);
     }
 
     #[test]
@@ -860,9 +835,9 @@ mod tests {
 
         let output_dir = TempDir::new().expect("failed to create temp output dir");
         let timing_path = output_dir.path().join("timing.svg");
-        let mse_path = output_dir.path().join("mse.svg");
+        let mse_path = output_dir.path().join("rmse.svg");
         fs::write(&timing_path, "stale timing").expect("failed to create stale timing chart");
-        fs::write(&mse_path, "stale mse").expect("failed to create stale mse chart");
+        fs::write(&mse_path, "stale rmse").expect("failed to create stale rmse chart");
 
         let config = ReportConfig {
             output_dir: output_dir.path().to_path_buf(),
@@ -877,7 +852,7 @@ mod tests {
         );
         assert!(
             !mse_path.exists(),
-            "stale MSE chart should be removed when MSE chart has no data"
+            "stale RMSE chart should be removed when RMSE chart has no data"
         );
         let markdown_path = output_dir.path().join("tables.md");
         assert!(
@@ -887,7 +862,7 @@ mod tests {
         let markdown = fs::read_to_string(&markdown_path).expect("failed to read markdown report");
         assert!(markdown.contains("# Benchmark Tables"));
         assert!(markdown.contains("## Timing by Peak Count"));
-        assert!(markdown.contains("## MSE vs Reference by Peak Count"));
+        assert!(markdown.contains("## RMSE vs Reference by Peak Count"));
         assert!(markdown.contains("_No data available._"));
     }
 }

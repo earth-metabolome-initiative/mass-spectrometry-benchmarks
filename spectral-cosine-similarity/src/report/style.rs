@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
-use super::types::{LIBRARY_COLORS, MarkerShape, ResultRow, SeriesStyle};
+#[cfg(test)]
+use super::types::ResultRow;
+use super::types::{LIBRARY_COLORS, MarkerShape, SeriesStyle};
 
+#[cfg(test)]
 pub(crate) fn series_label(algo: &str, lib: &str) -> String {
     format!("{algo} ({lib})")
 }
@@ -28,8 +31,22 @@ fn color_for_series_index(index: usize) -> plotters::style::RGBColor {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_series_style_map(data: &[ResultRow]) -> HashMap<String, SeriesStyle> {
-    let mut libraries: Vec<String> = data.iter().map(|r| r.lib_name.clone()).collect();
+    let mut series_pairs: Vec<(String, String)> = data
+        .iter()
+        .map(|r| (series_label(&r.algo_name, &r.lib_name), r.lib_name.clone()))
+        .collect();
+    series_pairs.sort();
+    series_pairs.dedup();
+
+    build_series_style_map_from_pairs(&series_pairs)
+}
+
+pub(crate) fn build_series_style_map_from_pairs(
+    series_pairs: &[(String, String)],
+) -> HashMap<String, SeriesStyle> {
+    let mut libraries: Vec<String> = series_pairs.iter().map(|(_, lib)| lib.clone()).collect();
     libraries.sort();
     libraries.dedup();
 
@@ -39,20 +56,13 @@ pub(crate) fn build_series_style_map(data: &[ResultRow]) -> HashMap<String, Seri
         .map(|(idx, lib)| (lib, marker_for_library_index(idx)))
         .collect();
 
-    let mut series_pairs: Vec<(String, String)> = data
-        .iter()
-        .map(|r| (series_label(&r.algo_name, &r.lib_name), r.lib_name.clone()))
-        .collect();
-    series_pairs.sort();
-    series_pairs.dedup();
-
     let mut styles: HashMap<String, SeriesStyle> = HashMap::new();
-    for (index, (label, library_name)) in series_pairs.into_iter().enumerate() {
+    for (index, (label, library_name)) in series_pairs.iter().enumerate() {
         let marker = *library_markers
-            .get(&library_name)
+            .get(library_name)
             .expect("marker must exist for each library");
         styles.insert(
-            label,
+            label.clone(),
             SeriesStyle {
                 color: color_for_series_index(index),
                 marker,

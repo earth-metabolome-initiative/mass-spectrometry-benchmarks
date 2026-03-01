@@ -47,7 +47,7 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
     report::generate(&mut test_db.conn, &report_config, None);
 
     assert!(output_dir.path().join("timing.svg").exists());
-    assert!(output_dir.path().join("mse.svg").exists());
+    assert!(output_dir.path().join("rmse.svg").exists());
     assert!(output_dir.path().join("tables.md").exists());
 
     let spectra_count = spectra::table
