@@ -59,20 +59,19 @@ pub fn initialize(conn: &mut SqliteConnection) {
     // Run schema.sql (all CREATE IF NOT EXISTS, so idempotent)
     for statement in SCHEMA_SQL.split(';') {
         let trimmed = statement.trim();
-        if !trimmed.is_empty() {
-            if let Err(e) = sql_query(trimmed).execute(conn) {
-                let err_msg = e.to_string();
-                let is_legacy_reference_index_statement = trimmed
-                    .contains("idx_implementations_one_reference_per_algorithm")
-                    && err_msg.contains("no such column: is_reference");
-                let is_legacy_topology_view_statement = trimmed
-                    .contains("v_implementation_topology")
-                    && (err_msg.contains("no such column: i.is_reference")
-                        || err_msg.contains("no such column: a.approximates_algorithm_id"));
+        if !trimmed.is_empty()
+            && let Err(e) = sql_query(trimmed).execute(conn)
+        {
+            let err_msg = e.to_string();
+            let is_legacy_reference_index_statement = trimmed
+                .contains("idx_implementations_one_reference_per_algorithm")
+                && err_msg.contains("no such column: is_reference");
+            let is_legacy_topology_view_statement = trimmed.contains("v_implementation_topology")
+                && (err_msg.contains("no such column: i.is_reference")
+                    || err_msg.contains("no such column: a.approximates_algorithm_id"));
 
-                if !is_legacy_reference_index_statement && !is_legacy_topology_view_statement {
-                    panic!("Failed to execute schema statement: {e}\n{trimmed}");
-                }
+            if !is_legacy_reference_index_statement && !is_legacy_topology_view_statement {
+                panic!("Failed to execute schema statement: {e}\n{trimmed}");
             }
         }
     }

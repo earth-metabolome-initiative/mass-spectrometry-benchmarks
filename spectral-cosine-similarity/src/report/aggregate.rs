@@ -254,11 +254,14 @@ pub(crate) fn build_metric_chart_from_aggregates(
     rows: &[AggregatedSeriesPoint],
     style_map: &HashMap<String, SeriesStyle>,
 ) -> FacetedLineChart {
+    type BucketStats = Option<(f64, f64, usize)>;
+    type SeriesBucketStats = Vec<BucketStats>;
+    type FacetSeriesBucketStats = BTreeMap<String, SeriesBucketStats>;
+
     let labels = bucket_labels();
     let n_buckets = labels.len();
 
-    let mut by_facet: BTreeMap<String, BTreeMap<String, Vec<Option<(f64, f64, usize)>>>> =
-        BTreeMap::new();
+    let mut by_facet: BTreeMap<String, FacetSeriesBucketStats> = BTreeMap::new();
 
     for row in rows {
         if row.bucket_index >= n_buckets || !row.value.is_finite() || !row.std_dev.is_finite() {
