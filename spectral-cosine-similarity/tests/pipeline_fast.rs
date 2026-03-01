@@ -56,8 +56,10 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
 
     assert_eq!(spectra_count, 3);
     assert_eq!(experiments_count, 4);
-    assert_eq!(implementations_count, 3);
-    assert_eq!(results_count, 72);
+    assert_eq!(implementations_count, 5);
+    let n_pairs = spectra_count * (spectra_count + 1) / 2;
+    let expected_results = n_pairs * experiments_count * implementations_count;
+    assert_eq!(results_count, expected_results);
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let db_path = test_db.db_path.to_string_lossy().to_string();
@@ -76,5 +78,5 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
         .select(count_star())
         .first::<i64>(&mut test_db.conn)
         .expect("failed to count results after rerun");
-    assert_eq!(results_count_after_rerun, 72);
+    assert_eq!(results_count_after_rerun, expected_results);
 }

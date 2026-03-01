@@ -547,7 +547,7 @@ dependencies = [
 [[package]]
 name = "geometric-traits"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/geometric-traits#aa6530f349824570e644a68cb6b23a9ef4673da0"
+source = "git+https://github.com/earth-metabolome-initiative/geometric-traits#870d3371084a53c93f2175361e732618124eff57"
 dependencies = [
  "bitvec",
  "hashbrown 0.16.1",
@@ -977,7 +977,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 [[package]]
 name = "mass_spectrometry"
 version = "0.1.0"
-source = "git+https://github.com/earth-metabolome-initiative/mass-spectrometry-traits#0254beae1665286551140fa461378d4ee5b8f365"
+source = "git+https://github.com/earth-metabolome-initiative/mass-spectrometry-traits#741a7d15b13a50ceb8ad40243b33aa6915f2b082"
 dependencies = [
  "csv",
  "geometric-traits",

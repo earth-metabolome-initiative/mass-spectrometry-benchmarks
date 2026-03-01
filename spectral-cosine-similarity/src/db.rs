@@ -59,6 +59,11 @@ pub fn initialize(conn: &mut SqliteConnection) {
         Some("Hungarian algorithm-based cosine similarity"),
     );
     let cosine_greedy_id = ensure_algorithm(conn, "CosineGreedy", Some("Greedy cosine similarity"));
+    let modified_cosine_id = ensure_algorithm(
+        conn,
+        "ModifiedCosine",
+        Some("Precursor-shift-aware modified cosine similarity"),
+    );
 
     // Seed libraries
     let rust_lib_id = ensure_rust_library(conn);
@@ -68,6 +73,8 @@ pub fn initialize(conn: &mut SqliteConnection) {
     ensure_implementation(conn, cosine_hungarian_id, rust_lib_id);
     ensure_implementation(conn, cosine_hungarian_id, matchms_lib_id);
     ensure_implementation(conn, cosine_greedy_id, matchms_lib_id);
+    ensure_implementation(conn, modified_cosine_id, rust_lib_id);
+    ensure_implementation(conn, modified_cosine_id, matchms_lib_id);
 
     // Seed experiments
     for (tolerance, mz_power, intensity_power) in PARAM_SETS {
@@ -331,8 +338,8 @@ source = "git+https://example.com/repo#abc123def"
             .first::<i64>(&mut conn)
             .expect("failed to count experiments");
 
-        assert_eq!(algorithm_count, 2);
-        assert_eq!(implementation_count, 3);
+        assert_eq!(algorithm_count, 3);
+        assert_eq!(implementation_count, 5);
         assert_eq!(experiment_count, PARAM_SETS.len() as i64);
     }
 
@@ -345,9 +352,16 @@ source = "git+https://example.com/repo#abc123def"
             get_implementation_id(&mut conn, "CosineHungarian", "mass-spectrometry-traits");
         let matchms_hungarian = get_implementation_id(&mut conn, "CosineHungarian", "matchms");
         let matchms_greedy = get_implementation_id(&mut conn, "CosineGreedy", "matchms");
+        let rust_modified =
+            get_implementation_id(&mut conn, "ModifiedCosine", "mass-spectrometry-traits");
+        let matchms_modified = get_implementation_id(&mut conn, "ModifiedCosine", "matchms");
 
         assert_ne!(rust_hungarian, matchms_hungarian);
         assert_ne!(matchms_hungarian, matchms_greedy);
         assert_ne!(rust_hungarian, matchms_greedy);
+        assert_ne!(rust_modified, matchms_modified);
+        assert_ne!(rust_hungarian, rust_modified);
+        assert_ne!(matchms_hungarian, matchms_modified);
+        assert_ne!(matchms_greedy, matchms_modified);
     }
 }

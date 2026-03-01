@@ -11,7 +11,6 @@ use diesel::sql_types::{Float, Integer};
 
 use crate::schema::{algorithms, implementations, libraries, results, spectra};
 
-const REFERENCE_ALGO: &str = "CosineHungarian";
 const REFERENCE_LIB: &str = "matchms";
 const BUCKET_BOUNDARIES: &[i32] = &[5, 9, 17, 33, 65, 129, 257, 513];
 const BAR_CORNER_RADIUS: f64 = 3.0;
@@ -211,25 +210,29 @@ fn build_mse_chart(
     let labels = bucket_labels();
     let n_buckets = labels.len();
 
-    // Reference scores keyed by (left_id, right_id, experiment_id)
-    let ref_scores: HashMap<(i32, i32, i32), f32> = data
-        .iter()
-        .filter(|r| r.algo_name == REFERENCE_ALGO && r.lib_name == REFERENCE_LIB)
-        .map(|r| ((r.left_id, r.right_id, r.experiment_id), r.score))
-        .collect();
+    // Matchms reference scores keyed by algorithm and (left_id, right_id, experiment_id).
+    let mut ref_scores: HashMap<String, HashMap<(i32, i32, i32), f32>> = HashMap::new();
+    for row in data.iter().filter(|r| r.lib_name == REFERENCE_LIB) {
+        ref_scores
+            .entry(row.algo_name.clone())
+            .or_default()
+            .insert((row.left_id, row.right_id, row.experiment_id), row.score);
+    }
 
     let mut grouped: HashMap<(String, String), Vec<Vec<f64>>> = HashMap::new();
 
     for row in data {
-        // Skip the reference implementation itself
-        if row.algo_name == REFERENCE_ALGO && row.lib_name == REFERENCE_LIB {
+        // Skip reference implementations; chart compares non-reference to matchms reference.
+        if row.lib_name == REFERENCE_LIB {
             continue;
         }
-        if let (Some(&ref_score), Some(&lp), Some(&rp)) = (
-            ref_scores.get(&(row.left_id, row.right_id, row.experiment_id)),
+        if let (Some(algo_refs), Some(&lp), Some(&rp)) = (
+            ref_scores.get(&row.algo_name),
             spectra_peaks.get(&row.left_id),
             spectra_peaks.get(&row.right_id),
-        ) && let Some(bi) = bucket_index(lp.max(rp))
+        ) && let Some(&ref_score) =
+            algo_refs.get(&(row.left_id, row.right_id, row.experiment_id))
+            && let Some(bi) = bucket_index(lp.max(rp))
         {
             let diff = row.score as f64 - ref_score as f64;
             grouped
@@ -598,7 +601,7 @@ fn compare_results(conn: &mut SqliteConnection) {
 
     let rmse = (sum_sq_score / rows.len() as f64).sqrt();
 
-    eprintln!("[report] Cross-implementation comparison (Rust vs matchms):");
+    eprintln!("[report] Cross-implementation comparison (Rust vs matchms, same algorithm):");
     eprintln!("[report]   Pairs compared: {}", rows.len());
     eprintln!("[report]   Mismatches (score>1e-6 or matches differ): {mismatch_count}");
     eprintln!("[report]   Max score diff: {max_score_diff:.6e}");

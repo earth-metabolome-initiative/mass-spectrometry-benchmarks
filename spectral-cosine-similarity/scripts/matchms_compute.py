@@ -13,7 +13,7 @@ import time
 
 import numpy as np
 from matchms import Spectrum
-from matchms.similarity import CosineGreedy, CosineHungarian
+from matchms.similarity import CosineGreedy, CosineHungarian, ModifiedCosine
 from tqdm import tqdm
 
 DB_PATH = sys.argv[1] if len(sys.argv) > 1 else "fixtures/benchmark.db"
@@ -151,6 +151,7 @@ def compute_algorithm(algo_name: str, algo_class):
 def main():
     compute_algorithm("CosineHungarian", CosineHungarian)
     compute_algorithm("CosineGreedy", CosineGreedy)
+    compute_algorithm("ModifiedCosine", ModifiedCosine)
 
 
 if __name__ == "__main__":

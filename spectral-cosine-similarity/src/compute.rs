@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hint::black_box;
@@ -15,6 +16,14 @@ use crate::report;
 
 const FLUSH_BATCH: usize = 500;
 const CHART_UPDATE_INTERVAL: usize = 50_000;
+const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
+const MATCHMS_LIBRARY_NAME: &str = "matchms";
+
+struct ComputeContext {
+    experiments: Vec<Experiment>,
+    spectra_map: HashMap<i32, GenericSpectrum<f32, f32>>,
+    id_pairs: Vec<(i32, i32)>,
+}
 
 /// Compute similarities and timings for all implementations in a single pass,
 /// interleaving Rust and Python in batches so that charts stay up to date.
@@ -63,25 +72,45 @@ fn run_matchms_default(max_spectra: Option<usize>) {
     }
 }
 
-fn compute_all<F>(conn: &mut SqliteConnection, max_spectra: Option<usize>, run_matchms: &F)
-where
-    F: Fn(Option<usize>),
-{
-    let impl_id = db::get_implementation_id(conn, "CosineHungarian", "mass-spectrometry-traits");
+fn load_compute_context(conn: &mut SqliteConnection) -> ComputeContext {
     let experiments = db::load_experiments(conn);
 
     let all_spectra: Vec<SpectrumRow> = crate::schema::spectra::table
         .load(conn)
         .expect("failed to load spectra");
-
     let spectra_map: HashMap<i32, GenericSpectrum<f32, f32>> = all_spectra
         .iter()
         .map(|s| (s.id, s.to_generic_spectrum()))
         .collect();
 
     let spectra_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
-
     let id_pairs = generate_pairs(&spectra_ids);
+
+    ComputeContext {
+        experiments,
+        spectra_map,
+        id_pairs,
+    }
+}
+
+fn compute_rust_algorithm<F, B, S>(
+    conn: &mut SqliteConnection,
+    context: &ComputeContext,
+    algorithm_name: &str,
+    max_spectra: Option<usize>,
+    run_matchms: &F,
+    build_similarity: B,
+) -> usize
+where
+    F: Fn(Option<usize>),
+    B: Fn(&ExperimentParams) -> S,
+    S: ScalarSimilarity<
+            GenericSpectrum<f32, f32>,
+            GenericSpectrum<f32, f32>,
+            Similarity = (f32, u16),
+        >,
+{
+    let impl_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
 
     // Load existing results to skip completed work
     let existing: HashSet<(i32, i32, i32)> = crate::schema::results::table
@@ -98,8 +127,8 @@ where
 
     // Work items: pairs not yet in results
     let mut work: Vec<(i32, i32, &Experiment)> = Vec::new();
-    for &(left_id, right_id) in &id_pairs {
-        for exp in &experiments {
+    for &(left_id, right_id) in &context.id_pairs {
+        for exp in &context.experiments {
             if !existing.contains(&(left_id, right_id, exp.id)) {
                 work.push((left_id, right_id, exp));
             }
@@ -107,18 +136,17 @@ where
     }
 
     if work.is_empty() {
-        eprintln!("[compute] CosineHungarian (Rust): nothing to compute");
-        run_matchms(max_spectra);
-        return;
+        eprintln!("[compute] {algorithm_name} (Rust): nothing to compute");
+        return 0;
     }
 
-    eprintln!("[compute] CosineHungarian (Rust): {} pairs...", work.len());
+    eprintln!("[compute] {algorithm_name} (Rust): {} pairs...", work.len());
 
     let pb = ProgressBar::new(work.len() as u64);
     pb.set_style(
-        ProgressStyle::with_template(
-            "[compute] CosineHungarian (Rust) {bar:40} {pos}/{len} [{eta}]",
-        )
+        ProgressStyle::with_template(&format!(
+            "[compute] {algorithm_name} (Rust) {{bar:40}} {{pos}}/{{len}} [{{eta}}]"
+        ))
         .unwrap(),
     );
 
@@ -126,16 +154,21 @@ where
     let mut total_done: usize = 0;
     let mut next_chart_update: usize = CHART_UPDATE_INTERVAL;
 
-    for (left_id, right_id, exp) in &work {
-        let left = &spectra_map[left_id];
-        let right = &spectra_map[right_id];
+    for (left_id, right_id, exp) in work {
+        let left = context
+            .spectra_map
+            .get(&left_id)
+            .expect("left spectrum not found");
+        let right = context
+            .spectra_map
+            .get(&right_id)
+            .expect("right spectrum not found");
         let params = exp.parse_params();
+        let similarity = build_similarity(&params);
 
-        let cosine = ExactCosine::new(params.mz_power, params.intensity_power, params.tolerance);
-
-        // Warmup
+        // Warmup the specific algorithm implementation for this pair/parameter set.
         for _ in 0..params.n_warmup {
-            let _ = black_box(cosine.similarity(black_box(left), black_box(right)));
+            let _ = black_box(similarity.similarity(black_box(left), black_box(right)));
         }
 
         // Timed runs
@@ -143,7 +176,7 @@ where
         let mut last_result = (0.0f32, 0u16);
         for _ in 0..params.n_reps {
             let t0 = Instant::now();
-            last_result = black_box(cosine.similarity(black_box(left), black_box(right)));
+            last_result = black_box(similarity.similarity(black_box(left), black_box(right)));
             times_ns.push(t0.elapsed().as_nanos());
         }
 
@@ -153,8 +186,8 @@ where
         let median_us = median_ns as f32 / 1000.0;
 
         batch.push(NewResult {
-            left_id: *left_id,
-            right_id: *right_id,
+            left_id,
+            right_id,
             experiment_id: exp.id,
             implementation_id: impl_id,
             score,
@@ -182,52 +215,110 @@ where
     flush_results(conn, &mut batch);
     pb.finish_and_clear();
 
-    eprintln!("[compute] CosineHungarian (Rust): {total_done} pairs computed");
+    eprintln!("[compute] {algorithm_name} (Rust): {total_done} pairs computed");
+
+    total_done
+}
+
+fn compute_all<F>(conn: &mut SqliteConnection, max_spectra: Option<usize>, run_matchms: &F)
+where
+    F: Fn(Option<usize>),
+{
+    let context = load_compute_context(conn);
+
+    compute_rust_algorithm(
+        conn,
+        &context,
+        "CosineHungarian",
+        max_spectra,
+        run_matchms,
+        |params| ExactCosine::new(params.mz_power, params.intensity_power, params.tolerance),
+    );
+    compute_rust_algorithm(
+        conn,
+        &context,
+        "ModifiedCosine",
+        max_spectra,
+        run_matchms,
+        |params| ModifiedCosine::new(params.mz_power, params.intensity_power, params.tolerance),
+    );
 
     // Final matchms run to catch any remaining work
     run_matchms(max_spectra);
 }
 
 fn print_timing_report(conn: &mut SqliteConnection) {
-    let rust_impl_id =
-        db::get_implementation_id(conn, "CosineHungarian", "mass-spectrometry-traits");
-    let matchms_hungarian_id = db::get_implementation_id(conn, "CosineHungarian", "matchms");
+    let implementation_rows: Vec<(String, String, i32)> = crate::schema::implementations::table
+        .inner_join(crate::schema::algorithms::table)
+        .inner_join(crate::schema::libraries::table)
+        .select((
+            crate::schema::algorithms::name,
+            crate::schema::libraries::name,
+            crate::schema::implementations::id,
+        ))
+        .load(conn)
+        .expect("failed to load implementations for timing report");
 
-    let rust_stats = timing_stats(
-        conn,
-        rust_impl_id,
-        "CosineHungarian (mass-spectrometry-traits)",
-    );
-    let matchms_stats = timing_stats(conn, matchms_hungarian_id, "CosineHungarian (matchms)");
+    let mut by_algorithm: BTreeMap<String, Vec<(String, i32)>> = BTreeMap::new();
+    for (algorithm, library, implementation_id) in implementation_rows {
+        by_algorithm
+            .entry(algorithm)
+            .or_default()
+            .push((library, implementation_id));
+    }
 
     eprintln!("\n=== Timing Report ===\n");
 
-    if let Some(ref rs) = rust_stats {
-        print_algo_stats(rs);
-    }
-    if let Some(ref ms) = matchms_stats {
-        print_algo_stats(ms);
-    }
+    for (algorithm, libraries) in by_algorithm {
+        let rust_impl = libraries
+            .iter()
+            .find(|(library, _)| library == RUST_LIBRARY_NAME)
+            .map(|(_, implementation_id)| *implementation_id);
+        let matchms_impl = libraries
+            .iter()
+            .find(|(library, _)| library == MATCHMS_LIBRARY_NAME)
+            .map(|(_, implementation_id)| *implementation_id);
 
-    if let (Some(rs), Some(ms)) = (&rust_stats, &matchms_stats)
-        && rs.mean > 0.0
-        && ms.mean > 0.0
-    {
-        let speedup = ms.mean / rs.mean;
-        eprintln!("Speedup (Rust vs matchms): {speedup:.1}x");
-    }
+        let rust_stats = rust_impl.and_then(|implementation_id| {
+            timing_stats(
+                conn,
+                implementation_id,
+                &format!("{algorithm} ({RUST_LIBRARY_NAME})"),
+            )
+        });
+        let matchms_stats = matchms_impl.and_then(|implementation_id| {
+            timing_stats(
+                conn,
+                implementation_id,
+                &format!("{algorithm} ({MATCHMS_LIBRARY_NAME})"),
+            )
+        });
 
-    // Also report CosineGreedy if available
-    if let Ok(greedy_impl_id) = crate::schema::implementations::table
-        .inner_join(crate::schema::algorithms::table)
-        .inner_join(crate::schema::libraries::table)
-        .filter(crate::schema::algorithms::name.eq("CosineGreedy"))
-        .filter(crate::schema::libraries::name.eq("matchms"))
-        .select(crate::schema::implementations::id)
-        .first::<i32>(conn)
-        && let Some(gs) = timing_stats(conn, greedy_impl_id, "CosineGreedy (matchms)")
-    {
-        print_algo_stats(&gs);
+        if let Some(ref stats) = rust_stats {
+            print_algo_stats(stats);
+        }
+        if let Some(ref stats) = matchms_stats {
+            print_algo_stats(stats);
+        }
+
+        if let (Some(rust), Some(matchms)) = (&rust_stats, &matchms_stats)
+            && rust.mean > 0.0
+            && matchms.mean > 0.0
+        {
+            let speedup = matchms.mean / rust.mean;
+            eprintln!("Speedup ({algorithm}, Rust vs matchms): {speedup:.1}x");
+        }
+
+        for (library, implementation_id) in libraries {
+            if library == RUST_LIBRARY_NAME || library == MATCHMS_LIBRARY_NAME {
+                continue;
+            }
+            if let Some(stats) =
+                timing_stats(conn, implementation_id, &format!("{algorithm} ({library})"))
+            {
+                print_algo_stats(&stats);
+            }
+        }
     }
 }
 
