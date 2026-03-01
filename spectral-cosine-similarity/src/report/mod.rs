@@ -1,0 +1,893 @@
+mod aggregate;
+mod compare;
+mod data;
+mod markdown;
+mod render;
+mod style;
+mod types;
+
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+
+use diesel::sqlite::SqliteConnection;
+
+use crate::progress::StageProgress;
+
+use aggregate::{MetricKind, build_metric_chart, omit_empty_buckets};
+use data::{
+    algorithm_references, load_algorithm_canonical_map, load_result_data, load_spectra_peaks,
+};
+use markdown::write_markdown_tables;
+use render::render_faceted_line_chart;
+use style::build_series_style_map;
+use types::{FacetedLineChart, ResultRow};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactNames {
+    pub timing_svg: String,
+    pub mse_svg: String,
+    pub markdown: String,
+}
+
+impl Default for ArtifactNames {
+    fn default() -> Self {
+        Self {
+            timing_svg: "timing.svg".to_string(),
+            mse_svg: "mse.svg".to_string(),
+            markdown: "tables.md".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReportConfig {
+    pub output_dir: PathBuf,
+    pub artifact_names: ArtifactNames,
+    pub include_comparison: bool,
+    pub prune_empty_buckets: bool,
+}
+
+impl Default for ReportConfig {
+    fn default() -> Self {
+        Self {
+            output_dir: PathBuf::from("output"),
+            artifact_names: ArtifactNames::default(),
+            include_comparison: true,
+            prune_empty_buckets: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReportArtifacts {
+    pub timing_svg: Option<PathBuf>,
+    pub mse_svg: Option<PathBuf>,
+    pub markdown: PathBuf,
+}
+
+fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
+    if let Some(progress) = progress.as_deref_mut() {
+        progress.set_substep(message);
+    } else {
+        eprintln!("{message}");
+    }
+}
+
+fn remove_file_if_exists(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => panic!("failed to remove stale chart {}: {err}", path.display()),
+    }
+}
+
+fn build_timing_chart(
+    data: &[ResultRow],
+    spectra_peaks: &std::collections::HashMap<i32, i32>,
+    style_map: &std::collections::HashMap<String, types::SeriesStyle>,
+    references: &std::collections::HashMap<String, types::AlgorithmReference>,
+) -> FacetedLineChart {
+    build_metric_chart(
+        MetricKind::Timing,
+        data,
+        spectra_peaks,
+        style_map,
+        references,
+    )
+}
+
+fn build_mse_chart(
+    data: &[ResultRow],
+    spectra_peaks: &std::collections::HashMap<i32, i32>,
+    style_map: &std::collections::HashMap<String, types::SeriesStyle>,
+    references: &std::collections::HashMap<String, types::AlgorithmReference>,
+) -> FacetedLineChart {
+    build_metric_chart(MetricKind::Mse, data, spectra_peaks, style_map, references)
+}
+
+fn render_chart_artifact(
+    chart: &FacetedLineChart,
+    output_path: &Path,
+    progress: &mut Option<&mut dyn StageProgress>,
+    render_message: &str,
+) -> Option<PathBuf> {
+    if chart.facets.is_empty() || chart.bucket_labels.is_empty() {
+        remove_file_if_exists(output_path);
+        return None;
+    }
+
+    emit(progress, render_message);
+    render_faceted_line_chart(chart, output_path.to_string_lossy().as_ref())
+        .unwrap_or_else(|err| panic!("failed to render chart {}: {err}", output_path.display()));
+    emit(
+        progress,
+        &format!("[report] Written {}", output_path.display()),
+    );
+    Some(output_path.to_path_buf())
+}
+
+pub fn generate(
+    conn: &mut SqliteConnection,
+    cfg: &ReportConfig,
+    mut progress: Option<&mut dyn StageProgress>,
+) -> ReportArtifacts {
+    emit(&mut progress, "[report] Generating charts");
+    fs::create_dir_all(&cfg.output_dir).expect("failed to create output directory");
+
+    emit(&mut progress, "[report] Loading result data");
+    let spectra_peaks = load_spectra_peaks(conn);
+    let data = load_result_data(conn);
+    let canonical_algorithm_map = load_algorithm_canonical_map(conn);
+    let references = algorithm_references(&data, &canonical_algorithm_map);
+    let style_map = build_series_style_map(&data);
+
+    let mut timing_chart = build_timing_chart(&data, &spectra_peaks, &style_map, &references);
+    let mut mse_chart = build_mse_chart(&data, &spectra_peaks, &style_map, &references);
+
+    if cfg.prune_empty_buckets {
+        timing_chart = omit_empty_buckets(timing_chart);
+        mse_chart = omit_empty_buckets(mse_chart);
+    }
+
+    let timing_path = cfg.output_dir.join(&cfg.artifact_names.timing_svg);
+    let timing_svg = render_chart_artifact(
+        &timing_chart,
+        &timing_path,
+        &mut progress,
+        "[report] Rendering timing chart",
+    );
+
+    let mse_path = cfg.output_dir.join(&cfg.artifact_names.mse_svg);
+    let mse_svg = render_chart_artifact(
+        &mse_chart,
+        &mse_path,
+        &mut progress,
+        "[report] Rendering MSE chart",
+    );
+
+    let markdown_path = cfg.output_dir.join(&cfg.artifact_names.markdown);
+    write_markdown_tables(&markdown_path, &[&timing_chart, &mse_chart]);
+    emit(
+        &mut progress,
+        &format!("[report] Written {}", markdown_path.display()),
+    );
+
+    if cfg.include_comparison {
+        compare::compare_results(conn, progress);
+    }
+
+    ReportArtifacts {
+        timing_svg,
+        mse_svg,
+        markdown: markdown_path,
+    }
+}
+
+fn legacy_artifact_names() -> ArtifactNames {
+    ArtifactNames {
+        timing_svg: "timing_by_peaks.svg".to_string(),
+        mse_svg: "mse_score_by_peaks.svg".to_string(),
+        markdown: "tables_by_peaks.md".to_string(),
+    }
+}
+
+pub fn run(conn: &mut SqliteConnection) {
+    run_with_progress(conn, None);
+}
+
+pub fn run_with_progress(conn: &mut SqliteConnection, progress: Option<&mut dyn StageProgress>) {
+    run_to_dir_with_progress(conn, Path::new("output"), progress);
+}
+
+pub fn run_to_dir(conn: &mut SqliteConnection, output_dir: &Path) {
+    run_to_dir_with_progress(conn, output_dir, None);
+}
+
+pub fn run_to_dir_with_progress(
+    conn: &mut SqliteConnection,
+    output_dir: &Path,
+    progress: Option<&mut dyn StageProgress>,
+) {
+    let config = ReportConfig {
+        output_dir: output_dir.to_path_buf(),
+        artifact_names: legacy_artifact_names(),
+        ..ReportConfig::default()
+    };
+    let _ = generate(conn, &config, progress);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use diesel::Connection;
+
+    use super::aggregate::{bucket_index, bucket_labels, mean, std_dev};
+    use super::data::algorithm_references;
+    use super::render::{YMode, build_series_points, build_series_whiskers, select_y_mode};
+    use super::style::build_series_style_map;
+    use super::types::{
+        BUCKET_BOUNDARIES, FacetChart, LIBRARY_COLORS, LineSeriesData, MSE_LOG_FLOOR, MarkerShape,
+    };
+    use super::*;
+    use crate::db;
+    use tempfile::TempDir;
+
+    fn sample_row(implementation_id: i32, is_reference: bool, algo: &str, lib: &str) -> ResultRow {
+        ResultRow {
+            implementation_id,
+            is_reference,
+            score: 0.0,
+            median_time_us: 0.0,
+            algo_name: algo.to_string(),
+            lib_name: lib.to_string(),
+            left_id: 1,
+            right_id: 1,
+            experiment_id: 1,
+        }
+    }
+
+    fn identity_canonical_map(data: &[ResultRow]) -> HashMap<String, String> {
+        data.iter()
+            .map(|row| (row.algo_name.clone(), row.algo_name.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn bucket_boundaries_and_labels_are_stable() {
+        assert_eq!(bucket_index(4), None);
+        assert_eq!(bucket_index(5), Some(0));
+        assert_eq!(bucket_index(8), Some(0));
+        assert_eq!(bucket_index(9), Some(1));
+        assert_eq!(bucket_index(513), Some(7));
+        assert_eq!(bucket_index(1023), Some(7));
+        assert_eq!(bucket_index(1024), Some(8));
+        assert_eq!(bucket_index(2047), Some(8));
+        assert_eq!(bucket_index(2048), Some(BUCKET_BOUNDARIES.len() - 1));
+
+        let labels = bucket_labels();
+        assert_eq!(labels.first().expect("missing first label"), "5–8");
+        assert_eq!(labels.last().expect("missing last label"), "2048+");
+        assert_eq!(labels.len(), BUCKET_BOUNDARIES.len());
+    }
+
+    #[test]
+    fn mean_and_std_dev_handle_edge_cases() {
+        assert_eq!(mean(&[]), 0.0);
+        assert_eq!(std_dev(&[]), 0.0);
+        assert_eq!(std_dev(&[42.0]), 0.0);
+
+        let m = mean(&[2.0, 4.0, 6.0]);
+        let sd = std_dev(&[2.0, 4.0, 6.0]);
+        assert!((m - 4.0).abs() < 1e-9);
+        assert!((sd - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn series_points_log_filters_non_positive_values() {
+        let points = build_series_points(&[-1.0, 0.0, 1.0, 2.0], true);
+        assert_eq!(points, vec![(2.0, 1.0), (3.0, 2.0)]);
+    }
+
+    #[test]
+    fn series_points_linear_keeps_zero_and_negative_values() {
+        let points = build_series_points(&[-1.0, 0.0, 1.0, 2.0], false);
+        assert_eq!(
+            points,
+            vec![(0.0, -1.0), (1.0, 0.0), (2.0, 1.0), (3.0, 2.0)]
+        );
+    }
+
+    #[test]
+    fn whisker_generation_is_mode_aware() {
+        let series = LineSeriesData {
+            label: "s".to_string(),
+            color: LIBRARY_COLORS[0],
+            marker: MarkerShape::Circle,
+            values: vec![0.0, 1.0],
+            std_devs: vec![0.1, 0.1],
+            counts: vec![1, 1],
+        };
+
+        let linear = build_series_whiskers(&series, false, 0.0);
+        let log = build_series_whiskers(&series, true, 1e-6);
+        assert_eq!(linear.len(), 6);
+        assert_eq!(log.len(), 3);
+    }
+
+    #[test]
+    fn y_mode_selection_matches_log_and_linear_fallback_behavior() {
+        let log_chart = FacetedLineChart {
+            title: "t".to_string(),
+            y_label: "y".to_string(),
+            bucket_labels: vec!["A".to_string()],
+            facets: Vec::new(),
+            log_y: true,
+        };
+        let facet_log = FacetChart {
+            title: "f".to_string(),
+            series: vec![LineSeriesData {
+                label: "s".to_string(),
+                color: LIBRARY_COLORS[0],
+                marker: MarkerShape::Circle,
+                values: vec![1.0],
+                std_devs: vec![0.0],
+                counts: vec![1],
+            }],
+        };
+        assert!(matches!(
+            select_y_mode(&log_chart, &facet_log),
+            Some(YMode::Log { .. })
+        ));
+
+        let facet_linear_fallback = FacetChart {
+            title: "f".to_string(),
+            series: vec![LineSeriesData {
+                label: "s".to_string(),
+                color: LIBRARY_COLORS[0],
+                marker: MarkerShape::Circle,
+                values: vec![0.0],
+                std_devs: vec![0.2],
+                counts: vec![1],
+            }],
+        };
+        assert!(matches!(
+            select_y_mode(&log_chart, &facet_linear_fallback),
+            Some(YMode::Linear { .. })
+        ));
+    }
+
+    #[test]
+    fn build_series_style_map_is_independent_of_input_order() {
+        let data_a = vec![
+            ResultRow {
+                score: 0.1,
+                median_time_us: 1.0,
+                ..sample_row(1, true, "CosineHungarian", "matchms")
+            },
+            ResultRow {
+                score: 0.2,
+                median_time_us: 2.0,
+                ..sample_row(2, false, "CosineHungarian", "mass-spectrometry-traits")
+            },
+            ResultRow {
+                score: 0.3,
+                median_time_us: 3.0,
+                ..sample_row(3, true, "EntropySimilarityWeighted", "ms_entropy")
+            },
+        ];
+        let data_b = vec![
+            ResultRow {
+                score: 0.3,
+                median_time_us: 3.0,
+                ..sample_row(3, true, "EntropySimilarityWeighted", "ms_entropy")
+            },
+            ResultRow {
+                score: 0.2,
+                median_time_us: 2.0,
+                ..sample_row(2, false, "CosineHungarian", "mass-spectrometry-traits")
+            },
+            ResultRow {
+                score: 0.1,
+                median_time_us: 1.0,
+                ..sample_row(1, true, "CosineHungarian", "matchms")
+            },
+        ];
+
+        assert_eq!(
+            build_series_style_map(&data_a),
+            build_series_style_map(&data_b)
+        );
+    }
+
+    #[test]
+    fn series_styles_are_library_consistent_and_cross_library_distinct() {
+        let data = vec![
+            sample_row(1, true, "CosineHungarian", "matchms"),
+            sample_row(2, false, "CosineGreedy", "matchms"),
+            sample_row(3, true, "ModifiedCosine", "mass-spectrometry-traits"),
+            sample_row(
+                4,
+                false,
+                "EntropySimilarityWeighted",
+                "mass-spectrometry-traits",
+            ),
+            sample_row(5, true, "EntropySimilarityUnweighted", "ms_entropy"),
+        ];
+
+        let styles = build_series_style_map(&data);
+
+        let matchms_a = styles["CosineHungarian (matchms)"];
+        let matchms_b = styles["CosineGreedy (matchms)"];
+        let rust_a = styles["ModifiedCosine (mass-spectrometry-traits)"];
+        let rust_b = styles["EntropySimilarityWeighted (mass-spectrometry-traits)"];
+        let entropy = styles["EntropySimilarityUnweighted (ms_entropy)"];
+
+        assert_eq!(matchms_a.marker, matchms_b.marker);
+        assert_eq!(rust_a.marker, rust_b.marker);
+        assert_ne!(matchms_a.color, matchms_b.color);
+        assert_ne!(rust_a.color, rust_b.color);
+
+        assert_ne!(matchms_a.color, rust_a.color);
+        assert_ne!(matchms_a.color, entropy.color);
+        assert_ne!(rust_a.color, entropy.color);
+
+        assert_ne!(matchms_a.marker, rust_a.marker);
+        assert_ne!(matchms_a.marker, entropy.marker);
+        assert_ne!(rust_a.marker, entropy.marker);
+    }
+
+    #[test]
+    fn references_are_driven_by_reference_flag() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                ..sample_row(10, true, "CosineHungarian", "matchms")
+            },
+            ResultRow {
+                score: 0.8,
+                median_time_us: 8.0,
+                ..sample_row(11, false, "CosineHungarian", "mass-spectrometry-traits")
+            },
+            ResultRow {
+                score: 0.7,
+                median_time_us: 12.0,
+                ..sample_row(20, true, "EntropySimilarityWeighted", "ms_entropy")
+            },
+            ResultRow {
+                score: 0.6,
+                median_time_us: 9.0,
+                ..sample_row(
+                    21,
+                    false,
+                    "EntropySimilarityWeighted",
+                    "mass-spectrometry-traits",
+                )
+            },
+        ];
+
+        let refs = algorithm_references(&data, &identity_canonical_map(&data));
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs["CosineHungarian"].implementation_id, 10);
+        assert_eq!(refs["CosineHungarian"].label, "CosineHungarian (matchms)");
+        assert_eq!(refs["EntropySimilarityWeighted"].implementation_id, 20);
+        assert_eq!(
+            refs["EntropySimilarityWeighted"].label,
+            "EntropySimilarityWeighted (ms_entropy)"
+        );
+    }
+
+    #[test]
+    fn timing_chart_groups_cosine_greedy_under_hungarian_reference() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                right_id: 2,
+                ..sample_row(10, true, "CosineHungarian", "matchms")
+            },
+            ResultRow {
+                score: 0.85,
+                median_time_us: 9.0,
+                right_id: 2,
+                ..sample_row(11, true, "CosineGreedy", "matchms")
+            },
+            ResultRow {
+                score: 0.8,
+                median_time_us: 8.0,
+                right_id: 2,
+                ..sample_row(12, false, "CosineHungarian", "mass-spectrometry-traits")
+            },
+        ];
+
+        let canonical_map: HashMap<String, String> = HashMap::from([
+            ("CosineHungarian".to_string(), "CosineHungarian".to_string()),
+            ("CosineGreedy".to_string(), "CosineHungarian".to_string()),
+        ]);
+        let references = algorithm_references(&data, &canonical_map);
+        let styles = build_series_style_map(&data);
+        let peaks: HashMap<i32, i32> = HashMap::from([(1, 10), (2, 12)]);
+        let chart = build_timing_chart(&data, &peaks, &styles, &references);
+
+        assert!(
+            chart
+                .facets
+                .iter()
+                .any(|f| f.title == "Reference: CosineHungarian (matchms)")
+        );
+        assert!(
+            !chart
+                .facets
+                .iter()
+                .any(|f| f.title == "Reference: CosineGreedy (matchms)")
+        );
+        let hungarian_facet = chart
+            .facets
+            .iter()
+            .find(|f| f.title == "Reference: CosineHungarian (matchms)")
+            .expect("missing CosineHungarian facet");
+        assert!(
+            hungarian_facet
+                .series
+                .iter()
+                .any(|s| s.label == "CosineGreedy (matchms)")
+        );
+    }
+
+    #[test]
+    fn mse_chart_uses_canonical_reference_scores_for_cosine_greedy() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                right_id: 2,
+                ..sample_row(10, true, "CosineHungarian", "matchms")
+            },
+            ResultRow {
+                score: 0.4,
+                median_time_us: 9.0,
+                right_id: 2,
+                ..sample_row(11, true, "CosineGreedy", "matchms")
+            },
+            ResultRow {
+                score: 0.8,
+                median_time_us: 8.0,
+                right_id: 2,
+                ..sample_row(12, false, "CosineGreedy", "mass-spectrometry-traits")
+            },
+        ];
+
+        let canonical_map: HashMap<String, String> = HashMap::from([
+            ("CosineHungarian".to_string(), "CosineHungarian".to_string()),
+            ("CosineGreedy".to_string(), "CosineHungarian".to_string()),
+        ]);
+        let references = algorithm_references(&data, &canonical_map);
+        let styles = build_series_style_map(&data);
+        let peaks: HashMap<i32, i32> = HashMap::from([(1, 10), (2, 12)]);
+
+        let chart = build_mse_chart(&data, &peaks, &styles, &references);
+        let facet = chart
+            .facets
+            .iter()
+            .find(|f| f.title == "Reference: CosineHungarian (matchms)")
+            .expect("missing canonical reference facet");
+        let series = facet
+            .series
+            .iter()
+            .find(|s| s.label == "CosineGreedy (mass-spectrometry-traits)")
+            .expect("missing greedy series");
+
+        let non_zero_points: Vec<(f64, usize)> = series
+            .values
+            .iter()
+            .copied()
+            .zip(series.counts.iter().copied())
+            .filter(|(_, c)| *c > 0)
+            .collect();
+        assert_eq!(non_zero_points.len(), 1);
+        let (mse, count) = non_zero_points[0];
+        assert_eq!(count, 1);
+        assert!((mse - 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mse_chart_includes_non_canonical_reference_implementation_series() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                right_id: 2,
+                ..sample_row(10, true, "CosineHungarian", "matchms")
+            },
+            ResultRow {
+                score: 0.4,
+                median_time_us: 9.0,
+                right_id: 2,
+                ..sample_row(11, true, "CosineGreedy", "matchms")
+            },
+        ];
+
+        let canonical_map: HashMap<String, String> = HashMap::from([
+            ("CosineHungarian".to_string(), "CosineHungarian".to_string()),
+            ("CosineGreedy".to_string(), "CosineHungarian".to_string()),
+        ]);
+        let references = algorithm_references(&data, &canonical_map);
+        let styles = build_series_style_map(&data);
+        let peaks: HashMap<i32, i32> = HashMap::from([(1, 10), (2, 12)]);
+
+        let chart = build_mse_chart(&data, &peaks, &styles, &references);
+        let facet = chart
+            .facets
+            .iter()
+            .find(|f| f.title == "Reference: CosineHungarian (matchms)")
+            .expect("missing canonical reference facet");
+        assert!(
+            facet
+                .series
+                .iter()
+                .any(|s| s.label == "CosineGreedy (matchms)"),
+            "CosineGreedy (matchms) should be plotted against CosineHungarian reference"
+        );
+    }
+
+    #[test]
+    fn mse_chart_clamps_exact_zero_to_log_floor() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                right_id: 2,
+                ..sample_row(20, true, "EntropySimilarityUnweighted", "ms_entropy")
+            },
+            ResultRow {
+                score: 0.9,
+                median_time_us: 8.0,
+                right_id: 2,
+                ..sample_row(
+                    21,
+                    false,
+                    "EntropySimilarityUnweighted",
+                    "mass-spectrometry-traits",
+                )
+            },
+        ];
+
+        let references = algorithm_references(&data, &identity_canonical_map(&data));
+        let styles = build_series_style_map(&data);
+        let peaks: HashMap<i32, i32> = HashMap::from([(1, 10), (2, 12)]);
+
+        let chart = build_mse_chart(&data, &peaks, &styles, &references);
+        let facet = chart
+            .facets
+            .iter()
+            .find(|f| f.title == "Reference: EntropySimilarityUnweighted (ms_entropy)")
+            .expect("missing entropy unweighted reference facet");
+        let series = facet
+            .series
+            .iter()
+            .find(|s| s.label == "EntropySimilarityUnweighted (mass-spectrometry-traits)")
+            .expect("missing entropy unweighted rust series");
+        let non_zero_points: Vec<(f64, usize)> = series
+            .values
+            .iter()
+            .copied()
+            .zip(series.counts.iter().copied())
+            .filter(|(_, c)| *c > 0)
+            .collect();
+        assert_eq!(non_zero_points.len(), 1);
+        let (mse, count) = non_zero_points[0];
+        assert_eq!(count, 1);
+        assert!((mse - MSE_LOG_FLOOR).abs() < 1e-24);
+    }
+
+    #[test]
+    fn omit_empty_buckets_drops_columns_with_no_observations() {
+        let chart = FacetedLineChart {
+            title: "test".to_string(),
+            y_label: "y".to_string(),
+            bucket_labels: vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            facets: vec![FacetChart {
+                title: "f".to_string(),
+                series: vec![
+                    LineSeriesData {
+                        label: "s1".to_string(),
+                        color: LIBRARY_COLORS[0],
+                        marker: MarkerShape::Circle,
+                        values: vec![0.0, 2.0, 0.0],
+                        std_devs: vec![0.0, 0.2, 0.0],
+                        counts: vec![0, 3, 0],
+                    },
+                    LineSeriesData {
+                        label: "s2".to_string(),
+                        color: LIBRARY_COLORS[1],
+                        marker: MarkerShape::Square,
+                        values: vec![0.0, 1.0, 0.0],
+                        std_devs: vec![0.0, 0.1, 0.0],
+                        counts: vec![0, 2, 0],
+                    },
+                ],
+            }],
+            log_y: true,
+        };
+
+        let pruned = omit_empty_buckets(chart);
+        assert_eq!(pruned.bucket_labels, vec!["B"]);
+        assert_eq!(pruned.facets.len(), 1);
+        assert_eq!(pruned.facets[0].series.len(), 2);
+        assert_eq!(pruned.facets[0].series[0].counts, vec![3]);
+        assert_eq!(pruned.facets[0].series[1].counts, vec![2]);
+    }
+
+    #[test]
+    fn mse_chart_is_grouped_by_reference_label() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                right_id: 2,
+                ..sample_row(10, true, "CosineHungarian", "matchms")
+            },
+            ResultRow {
+                score: 0.8,
+                median_time_us: 8.0,
+                right_id: 2,
+                ..sample_row(11, false, "CosineHungarian", "mass-spectrometry-traits")
+            },
+            ResultRow {
+                score: 0.7,
+                median_time_us: 12.0,
+                right_id: 2,
+                ..sample_row(20, true, "EntropySimilarityWeighted", "ms_entropy")
+            },
+            ResultRow {
+                score: 0.6,
+                median_time_us: 9.0,
+                right_id: 2,
+                ..sample_row(
+                    21,
+                    false,
+                    "EntropySimilarityWeighted",
+                    "mass-spectrometry-traits",
+                )
+            },
+        ];
+
+        let references = algorithm_references(&data, &identity_canonical_map(&data));
+        let styles = build_series_style_map(&data);
+        let peaks: HashMap<i32, i32> = HashMap::from([(1, 10), (2, 12)]);
+
+        let chart = build_mse_chart(&data, &peaks, &styles, &references);
+        assert_eq!(chart.facets.len(), 2);
+        assert!(
+            chart
+                .facets
+                .iter()
+                .any(|f| f.title == "Reference: CosineHungarian (matchms)")
+        );
+        assert!(
+            chart
+                .facets
+                .iter()
+                .any(|f| f.title == "Reference: EntropySimilarityWeighted (ms_entropy)")
+        );
+    }
+
+    #[test]
+    fn mse_chart_includes_modified_cosine_family_against_modified_cosine_reference() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                right_id: 2,
+                ..sample_row(30, true, "ModifiedCosine", "mass-spectrometry-traits")
+            },
+            ResultRow {
+                score: 0.85,
+                median_time_us: 9.0,
+                right_id: 2,
+                ..sample_row(31, false, "ModifiedCosineApprox", "matchms")
+            },
+            ResultRow {
+                score: 0.84,
+                median_time_us: 8.0,
+                right_id: 2,
+                ..sample_row(
+                    32,
+                    false,
+                    "ModifiedGreedyCosine",
+                    "mass-spectrometry-traits",
+                )
+            },
+            ResultRow {
+                score: 0.83,
+                median_time_us: 7.0,
+                right_id: 2,
+                ..sample_row(33, false, "ModifiedGreedyCosine", "matchms")
+            },
+        ];
+
+        let canonical_map: HashMap<String, String> = HashMap::from([
+            ("ModifiedCosine".to_string(), "ModifiedCosine".to_string()),
+            (
+                "ModifiedCosineApprox".to_string(),
+                "ModifiedCosine".to_string(),
+            ),
+            (
+                "ModifiedGreedyCosine".to_string(),
+                "ModifiedCosine".to_string(),
+            ),
+        ]);
+        let references = algorithm_references(&data, &canonical_map);
+        let styles = build_series_style_map(&data);
+        let peaks: HashMap<i32, i32> = HashMap::from([(1, 10), (2, 12)]);
+
+        let chart = build_mse_chart(&data, &peaks, &styles, &references);
+        let facet = chart
+            .facets
+            .iter()
+            .find(|f| f.title == "Reference: ModifiedCosine (mass-spectrometry-traits)")
+            .expect("missing ModifiedCosine reference facet");
+        assert!(
+            facet
+                .series
+                .iter()
+                .any(|s| s.label == "ModifiedCosineApprox (matchms)"),
+            "ModifiedCosineApprox series should be plotted against ModifiedCosine reference"
+        );
+        assert!(
+            facet
+                .series
+                .iter()
+                .any(|s| s.label == "ModifiedGreedyCosine (mass-spectrometry-traits)"),
+            "ModifiedGreedyCosine (mass-spectrometry-traits) should be plotted against ModifiedCosine reference"
+        );
+        assert!(
+            facet
+                .series
+                .iter()
+                .any(|s| s.label == "ModifiedGreedyCosine (matchms)"),
+            "ModifiedGreedyCosine (matchms) should be plotted against ModifiedCosine reference"
+        );
+    }
+
+    #[test]
+    fn generate_removes_stale_svgs_when_no_chart_data() {
+        let mut conn =
+            SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite db");
+        db::initialize(&mut conn);
+
+        let output_dir = TempDir::new().expect("failed to create temp output dir");
+        let timing_path = output_dir.path().join("timing.svg");
+        let mse_path = output_dir.path().join("mse.svg");
+        fs::write(&timing_path, "stale timing").expect("failed to create stale timing chart");
+        fs::write(&mse_path, "stale mse").expect("failed to create stale mse chart");
+
+        let config = ReportConfig {
+            output_dir: output_dir.path().to_path_buf(),
+            include_comparison: false,
+            ..ReportConfig::default()
+        };
+        generate(&mut conn, &config, None);
+
+        assert!(
+            !timing_path.exists(),
+            "stale timing chart should be removed when timing chart has no data"
+        );
+        assert!(
+            !mse_path.exists(),
+            "stale MSE chart should be removed when MSE chart has no data"
+        );
+        let markdown_path = output_dir.path().join("tables.md");
+        assert!(
+            markdown_path.exists(),
+            "markdown report should always be written"
+        );
+        let markdown = fs::read_to_string(&markdown_path).expect("failed to read markdown report");
+        assert!(markdown.contains("# Benchmark Tables"));
+        assert!(markdown.contains("## Timing by Peak Count"));
+        assert!(markdown.contains("## MSE vs Reference by Peak Count"));
+        assert!(markdown.contains("_No data available._"));
+    }
+}
