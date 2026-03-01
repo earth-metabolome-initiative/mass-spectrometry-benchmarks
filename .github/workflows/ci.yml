@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "spectral-cosine-similarity/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "spectral-cosine-similarity/**"
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-quality:
+    name: Rust quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spectral-cosine-similarity
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spectral-cosine-similarity -> target
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check compilation
+        run: cargo check --locked
+      - name: Lint (strict)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build tests
+        run: cargo test --no-run --locked
+
+  python-quality:
+    name: Python quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spectral-cosine-similarity
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --locked
+      - name: Syntax check scripts
+        run: python3 -m compileall -q scripts
+      - name: Import smoke check
+        run: uv run python3 -c "import matchms"
