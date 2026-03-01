@@ -60,13 +60,21 @@ pub fn initialize(conn: &mut SqliteConnection) {
     for statement in SCHEMA_SQL.split(';') {
         let trimmed = statement.trim();
         if !trimmed.is_empty() {
-            sql_query(trimmed)
-                .execute(conn)
-                .unwrap_or_else(|e| panic!("Failed to execute schema statement: {e}\n{trimmed}"));
+            if let Err(e) = sql_query(trimmed).execute(conn) {
+                let err_msg = e.to_string();
+                let is_legacy_reference_index_statement =
+                    trimmed.contains("idx_implementations_one_reference_per_algorithm")
+                        && err_msg.contains("no such column: is_reference");
+
+                if !is_legacy_reference_index_statement {
+                    panic!("Failed to execute schema statement: {e}\n{trimmed}");
+                }
+            }
         }
     }
     ensure_algorithms_approximation_schema(conn);
     ensure_implementations_reference_schema(conn);
+    ensure_spectra_hash_schema(conn);
 
     // Seed algorithms (implementation-agnostic)
     let cosine_hungarian_id = ensure_algorithm(
@@ -202,6 +210,29 @@ repair the data before continuing",
             duplicate_refs.n
         );
     }
+}
+
+fn ensure_spectra_hash_schema(conn: &mut SqliteConnection) {
+    if !table_has_column(conn, "spectra", "spectrum_hash") {
+        sql_query("ALTER TABLE spectra ADD COLUMN spectrum_hash TEXT")
+            .execute(conn)
+            .expect("failed to add spectra.spectrum_hash column");
+    }
+
+    sql_query(
+        "UPDATE spectra
+         SET spectrum_hash = printf('__legacy_spectrum_%d', id)
+         WHERE spectrum_hash IS NULL OR spectrum_hash = ''",
+    )
+    .execute(conn)
+    .expect("failed to backfill spectra.spectrum_hash for legacy rows");
+
+    sql_query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_hash_unique
+         ON spectra(spectrum_hash)",
+    )
+    .execute(conn)
+    .expect("failed to create spectra.spectrum_hash unique index");
 }
 
 fn ensure_algorithm(conn: &mut SqliteConnection, name: &str, description: Option<&str>) -> i32 {
@@ -791,5 +822,50 @@ source = "git+https://example.com/repo#abc123def"
             &mut conn,
             "approximates_algorithm_id"
         ));
+    }
+
+    #[test]
+    fn upgrades_legacy_spectra_table_with_spectrum_hash_column() {
+        let mut conn = setup_in_memory_connection();
+        sql_query(
+            "CREATE TABLE spectra (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                raw_name TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                precursor_mz REAL NOT NULL,
+                num_peaks INTEGER NOT NULL,
+                peaks TEXT NOT NULL
+            ) STRICT",
+        )
+        .execute(&mut conn)
+        .expect("failed to create legacy spectra table");
+
+        sql_query(
+            "INSERT INTO spectra (name, raw_name, source_file, precursor_mz, num_peaks, peaks)
+             VALUES
+             ('a', 'a', 'legacy.mgf', 100.0, 5, '[]'),
+             ('b', 'b', 'legacy.mgf', 200.0, 6, '[]')",
+        )
+        .execute(&mut conn)
+        .expect("failed to seed legacy spectra rows");
+
+        assert!(!table_has_column(&mut conn, "spectra", "spectrum_hash"));
+        ensure_spectra_hash_schema(&mut conn);
+        assert!(table_has_column(&mut conn, "spectra", "spectrum_hash"));
+
+        let hashes: Vec<String> = sql_query(
+            "SELECT spectrum_hash AS name
+             FROM spectra
+             ORDER BY id",
+        )
+        .load::<TableInfoRow>(&mut conn)
+        .expect("failed to load backfilled spectrum hashes")
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(hashes[0], "__legacy_spectrum_1");
+        assert_eq!(hashes[1], "__legacy_spectrum_2");
     }
 }
