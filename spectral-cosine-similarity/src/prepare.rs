@@ -1,6 +1,5 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
 
 use crate::mgf_parser::{parse_mgf, sanitize_name};
@@ -30,112 +29,180 @@ pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
         .collect();
 
     let total_existing = existing_names.len();
+    let mut remaining_budget = max_spectra.map(|max| max.saturating_sub(total_existing));
 
-    // If we already have enough spectra, skip loading.
-    if let Some(max) = max_spectra
-        && total_existing >= max
-    {
+    if let Some(0) = remaining_budget {
+        let max = max_spectra.expect("remaining_budget is Some only when max_spectra is set");
         eprintln!("[prepare] {total_existing} spectra already in DB (max {max}), nothing to load");
         return;
     }
 
-    // Determine which source files still need loading.
-    let loaded_sources: std::collections::HashSet<String> = spectra::table
-        .select(spectra::source_file)
-        .distinct()
-        .load::<String>(conn)
-        .expect("failed to load source files")
-        .into_iter()
-        .collect();
-
-    let sources_to_load: Vec<_> = mgf_sources()
-        .into_iter()
-        .filter(|(_, label)| !loaded_sources.contains(*label))
-        .collect();
-
-    if sources_to_load.is_empty() {
-        eprintln!(
-            "[prepare] {} spectra already in DB, no new sources to load",
-            total_existing
-        );
-        return;
-    }
-
+    let sources = mgf_sources();
     eprintln!(
-        "[prepare] {} spectra already in DB, loading {} new source(s)...",
+        "[prepare] {} spectra already in DB, scanning {} source(s) for missing spectra...",
         total_existing,
-        sources_to_load.len()
+        sources.len()
     );
 
     let mut seen_names = existing_names;
-    let mut inserted = 0;
+    let mut inserted_total = 0usize;
+    let mut processed_sources = 0usize;
 
-    for (path, source_label) in sources_to_load {
+    for (path, source_label) in sources {
         let mgf_path = Path::new(path);
         if !mgf_path.exists() {
             eprintln!("[prepare] Skipping {path} (not found)");
             continue;
         }
+        processed_sources += 1;
 
         let parsed = parse_mgf(mgf_path, MIN_PEAKS);
-        eprintln!(
-            "[prepare] Parsed {} spectra from {source_label}",
-            parsed.len()
-        );
-
+        let parsed_count = parsed.len();
+        let mut skipped_missing_or_duplicate = 0usize;
+        let mut inserted_source = 0usize;
+        let mut stopped_due_to_max = false;
         let mut batch: Vec<NewSpectrum> = Vec::new();
 
-        for spec in &parsed {
+        for spec in parsed {
+            if let Some(remaining) = remaining_budget
+                && remaining == 0
+            {
+                stopped_due_to_max = true;
+                break;
+            }
+
             let name = sanitize_name(&spec.raw_name);
             if name.is_empty() || seen_names.contains(&name) {
+                skipped_missing_or_duplicate += 1;
                 continue;
             }
             seen_names.insert(name.clone());
 
-            let peaks = Peaks(spec.peaks.clone());
+            let peaks = Peaks(spec.peaks);
             let num_peaks = peaks.0.len() as i32;
 
             batch.push(NewSpectrum {
                 name,
-                raw_name: spec.raw_name.clone(),
+                raw_name: spec.raw_name,
                 source_file: source_label.to_string(),
                 precursor_mz: spec.precursor_mz,
                 num_peaks,
                 peaks,
             });
 
-            if let Some(max) = max_spectra
-                && total_existing + inserted + batch.len() >= max
-            {
-                batch.truncate(max - total_existing - inserted);
-                break;
+            inserted_source += 1;
+            if let Some(ref mut remaining) = remaining_budget {
+                *remaining = remaining.saturating_sub(1);
             }
         }
-
-        let pb = ProgressBar::new(batch.len() as u64);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "[prepare] Inserting spectra {bar:40} {pos}/{len} [{eta}]",
-            )
-            .unwrap(),
-        );
 
         for chunk in batch.chunks(500) {
             diesel::insert_into(spectra::table)
                 .values(chunk)
                 .execute(conn)
                 .expect("failed to insert spectra batch");
-            pb.inc(chunk.len() as u64);
         }
 
-        inserted += batch.len();
-        pb.finish_and_clear();
+        inserted_total += inserted_source;
+        eprintln!(
+            "[prepare] {source_label}: parsed={parsed_count}, skipped={skipped_missing_or_duplicate}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}"
+        );
 
-        if let Some(max) = max_spectra
-            && total_existing + inserted >= max
-        {
+        if stopped_due_to_max {
             break;
         }
     }
-    eprintln!("[prepare] Inserted {inserted} new spectra");
+
+    if processed_sources == 0 {
+        eprintln!("[prepare] No source files were available");
+    }
+
+    eprintln!("[prepare] Inserted {inserted_total} new spectra");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diesel::sql_query;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn setup_in_memory_connection() -> SqliteConnection {
+        let mut conn = SqliteConnection::establish(":memory:")
+            .expect("failed to open in-memory sqlite connection");
+
+        sql_query(
+            "CREATE TABLE spectra (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                raw_name TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                precursor_mz REAL NOT NULL,
+                num_peaks INTEGER NOT NULL,
+                peaks TEXT NOT NULL
+            )",
+        )
+        .execute(&mut conn)
+        .expect("failed to create test schema");
+
+        conn
+    }
+
+    fn unique_pesticide_spectra() -> Vec<(String, crate::mgf_parser::ParsedSpectrum)> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let fixture = manifest_dir.join("fixtures").join("pesticides.mgf");
+        let mut unique = Vec::new();
+        let mut seen = HashSet::new();
+
+        for spec in parse_mgf(&fixture, MIN_PEAKS) {
+            let name = sanitize_name(&spec.raw_name);
+            if name.is_empty() || !seen.insert(name.clone()) {
+                continue;
+            }
+            unique.push((name, spec));
+        }
+
+        unique
+    }
+
+    #[test]
+    fn backfills_missing_rows_and_respects_hard_cap() {
+        let mut conn = setup_in_memory_connection();
+        let mut unique_specs = unique_pesticide_spectra();
+        assert!(
+            unique_specs.len() > 1,
+            "fixture should contain at least two unique spectra"
+        );
+
+        let total_unique = unique_specs.len();
+        let (seed_name, seed_spec) = unique_specs.remove(0);
+
+        diesel::insert_into(spectra::table)
+            .values(NewSpectrum {
+                name: seed_name,
+                raw_name: seed_spec.raw_name,
+                source_file: "pesticides.mgf".to_string(),
+                precursor_mz: seed_spec.precursor_mz,
+                num_peaks: seed_spec.peaks.len() as i32,
+                peaks: Peaks(seed_spec.peaks),
+            })
+            .execute(&mut conn)
+            .expect("failed to seed first spectrum");
+
+        run(&mut conn, Some(total_unique));
+
+        let count_after_backfill = spectra::table
+            .select(diesel::dsl::count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count rows after backfill");
+        assert_eq!(count_after_backfill, total_unique as i64);
+
+        run(&mut conn, Some(total_unique));
+
+        let count_after_second_run = spectra::table
+            .select(diesel::dsl::count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count rows after second run");
+        assert_eq!(count_after_second_run, total_unique as i64);
+    }
 }
