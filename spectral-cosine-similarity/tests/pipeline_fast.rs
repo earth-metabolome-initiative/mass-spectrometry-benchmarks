@@ -56,7 +56,7 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
 
     assert_eq!(spectra_count, 3);
     assert_eq!(experiments_count, 4);
-    assert_eq!(implementations_count, 5);
+    assert_eq!(implementations_count, 9);
     let n_pairs = spectra_count * (spectra_count + 1) / 2;
     let expected_results = n_pairs * experiments_count * implementations_count;
     assert_eq!(results_count, expected_results);

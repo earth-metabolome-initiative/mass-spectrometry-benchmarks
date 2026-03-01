@@ -7,12 +7,13 @@ Benchmark pipeline comparing cosine-similarity implementations for mass spectra.
 From `spectral-cosine-similarity/`:
 
 ```bash
+uv sync
 cargo fmt --all -- --check
 cargo check --locked
 cargo clippy --all-targets -- -D warnings
 cargo test --no-run --locked
 python3 -m compileall -q scripts
-uv run python3 -c "import matchms"
+uv run python3 -c "import matchms, ms_entropy"
 ```
 
 ## Pre-hooks (Rust-native with `prek`)

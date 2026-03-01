@@ -24,7 +24,12 @@ fn compute_rust_results_resume_without_duplicates() {
     let n_pairs = spectra_count * (spectra_count + 1) / 2;
     let expected_rust_rows = n_pairs * experiments_count;
 
-    for algorithm_name in ["CosineHungarian", "ModifiedCosine"] {
+    for algorithm_name in [
+        "CosineHungarian",
+        "ModifiedCosine",
+        "EntropySimilarityWeighted",
+        "EntropySimilarityUnweighted",
+    ] {
         let rust_impl_id = db::get_implementation_id(
             &mut test_db.conn,
             algorithm_name,
@@ -40,7 +45,12 @@ fn compute_rust_results_resume_without_duplicates() {
 
     compute::run_with_matchms(&mut test_db.conn, Some(3), |_| {});
 
-    for algorithm_name in ["CosineHungarian", "ModifiedCosine"] {
+    for algorithm_name in [
+        "CosineHungarian",
+        "ModifiedCosine",
+        "EntropySimilarityWeighted",
+        "EntropySimilarityUnweighted",
+    ] {
         let rust_impl_id = db::get_implementation_id(
             &mut test_db.conn,
             algorithm_name,

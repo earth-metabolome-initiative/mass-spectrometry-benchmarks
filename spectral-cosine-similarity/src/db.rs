@@ -1,5 +1,6 @@
 use diesel::prelude::*;
 use diesel::sql_query;
+use diesel::sql_types::{BigInt, Text};
 use diesel::sqlite::SqliteConnection;
 use std::path::Path;
 
@@ -14,6 +15,7 @@ const RUST_LIB_GIT_URL: &str =
     "https://github.com/earth-metabolome-initiative/mass-spectrometry-traits";
 
 const MATCHMS_LIB_NAME: &str = "matchms";
+const MS_ENTROPY_LIB_NAME: &str = "ms_entropy";
 
 const N_WARMUP: u32 = 3;
 const N_REPS: u32 = 10;
@@ -25,6 +27,18 @@ const PARAM_SETS: [(f32, f32, f32); 4] = [
     (0.5, 1.0, 0.5), // stress test
     (2.0, 0.0, 1.0), // wide tolerance
 ];
+
+#[derive(QueryableByName)]
+struct TableInfoRow {
+    #[diesel(sql_type = Text)]
+    name: String,
+}
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    n: i64,
+}
 
 pub fn db_path(_max_spectra: Option<usize>) -> &'static str {
     DB_PATH
@@ -51,6 +65,7 @@ pub fn initialize(conn: &mut SqliteConnection) {
                 .unwrap_or_else(|e| panic!("Failed to execute schema statement: {e}\n{trimmed}"));
         }
     }
+    ensure_implementations_reference_schema(conn);
 
     // Seed algorithms (implementation-agnostic)
     let cosine_hungarian_id = ensure_algorithm(
@@ -64,17 +79,32 @@ pub fn initialize(conn: &mut SqliteConnection) {
         "ModifiedCosine",
         Some("Precursor-shift-aware modified cosine similarity"),
     );
+    let entropy_weighted_id = ensure_algorithm(
+        conn,
+        "EntropySimilarityWeighted",
+        Some("Weighted spectral entropy similarity"),
+    );
+    let entropy_unweighted_id = ensure_algorithm(
+        conn,
+        "EntropySimilarityUnweighted",
+        Some("Unweighted spectral entropy similarity"),
+    );
 
     // Seed libraries
     let rust_lib_id = ensure_rust_library(conn);
     let matchms_lib_id = ensure_matchms_library(conn);
+    let ms_entropy_lib_id = ensure_ms_entropy_library(conn);
 
     // Seed implementations (same algorithm can have multiple implementations)
-    ensure_implementation(conn, cosine_hungarian_id, rust_lib_id);
-    ensure_implementation(conn, cosine_hungarian_id, matchms_lib_id);
-    ensure_implementation(conn, cosine_greedy_id, matchms_lib_id);
-    ensure_implementation(conn, modified_cosine_id, rust_lib_id);
-    ensure_implementation(conn, modified_cosine_id, matchms_lib_id);
+    ensure_implementation(conn, cosine_hungarian_id, rust_lib_id, false);
+    ensure_implementation(conn, cosine_hungarian_id, matchms_lib_id, true);
+    ensure_implementation(conn, cosine_greedy_id, matchms_lib_id, true);
+    ensure_implementation(conn, modified_cosine_id, rust_lib_id, false);
+    ensure_implementation(conn, modified_cosine_id, matchms_lib_id, true);
+    ensure_implementation(conn, entropy_weighted_id, rust_lib_id, false);
+    ensure_implementation(conn, entropy_weighted_id, ms_entropy_lib_id, true);
+    ensure_implementation(conn, entropy_unweighted_id, rust_lib_id, false);
+    ensure_implementation(conn, entropy_unweighted_id, ms_entropy_lib_id, true);
 
     // Seed experiments
     for (tolerance, mz_power, intensity_power) in PARAM_SETS {
@@ -86,6 +116,52 @@ pub fn initialize(conn: &mut SqliteConnection) {
             n_reps: N_REPS,
         };
         ensure_experiment(conn, &params);
+    }
+}
+
+fn implementations_has_column(conn: &mut SqliteConnection, column: &str) -> bool {
+    let rows: Vec<TableInfoRow> = sql_query("PRAGMA table_info(implementations)")
+        .load(conn)
+        .expect("failed to inspect implementations table");
+    rows.iter().any(|r| r.name == column)
+}
+
+fn ensure_implementations_reference_schema(conn: &mut SqliteConnection) {
+    if !implementations_has_column(conn, "is_reference") {
+        sql_query(
+            "ALTER TABLE implementations
+             ADD COLUMN is_reference INTEGER NOT NULL DEFAULT 0 CHECK (is_reference IN (0, 1))",
+        )
+        .execute(conn)
+        .expect("failed to add implementations.is_reference column");
+    }
+
+    sql_query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_implementations_one_reference_per_algorithm
+         ON implementations(algorithm_id)
+         WHERE is_reference = 1",
+    )
+    .execute(conn)
+    .expect("failed to create reference uniqueness index");
+
+    let duplicate_refs: CountRow = sql_query(
+        "SELECT COUNT(*) AS n
+         FROM (
+             SELECT algorithm_id
+             FROM implementations
+             WHERE is_reference = 1
+             GROUP BY algorithm_id
+             HAVING COUNT(*) > 1
+         )",
+    )
+    .get_result(conn)
+    .expect("failed to validate implementations reference uniqueness");
+    if duplicate_refs.n > 0 {
+        panic!(
+            "found {} algorithms with multiple reference implementations; \
+repair the data before continuing",
+            duplicate_refs.n
+        );
     }
 }
 
@@ -159,7 +235,47 @@ fn ensure_matchms_library(conn: &mut SqliteConnection) -> i32 {
         .expect("failed to insert matchms library")
 }
 
-fn ensure_implementation(conn: &mut SqliteConnection, algorithm_id: i32, library_id: i32) -> i32 {
+fn ensure_ms_entropy_library(conn: &mut SqliteConnection) -> i32 {
+    let version = ms_entropy_version();
+
+    if let Some(lib) = libraries::table
+        .filter(libraries::name.eq(MS_ENTROPY_LIB_NAME))
+        .filter(libraries::version.eq(&version))
+        .first::<Library>(conn)
+        .optional()
+        .expect("query failed")
+    {
+        return lib.id;
+    }
+
+    diesel::insert_into(libraries::table)
+        .values(&NewLibrary {
+            name: MS_ENTROPY_LIB_NAME,
+            version: &version,
+            git_commit: None,
+            git_url: Some("https://github.com/YuanyueLi/MSEntropy"),
+            language: "python",
+        })
+        .returning(libraries::id)
+        .get_result::<i32>(conn)
+        .expect("failed to insert ms_entropy library")
+}
+
+fn ensure_implementation(
+    conn: &mut SqliteConnection,
+    algorithm_id: i32,
+    library_id: i32,
+    is_reference: bool,
+) -> i32 {
+    if is_reference {
+        diesel::update(
+            implementations::table.filter(implementations::algorithm_id.eq(algorithm_id)),
+        )
+        .set(implementations::is_reference.eq(false))
+        .execute(conn)
+        .expect("failed to clear previous reference implementation");
+    }
+
     if let Some(imp) = implementations::table
         .filter(implementations::algorithm_id.eq(algorithm_id))
         .filter(implementations::library_id.eq(library_id))
@@ -167,6 +283,12 @@ fn ensure_implementation(conn: &mut SqliteConnection, algorithm_id: i32, library
         .optional()
         .expect("query failed")
     {
+        if imp.is_reference != is_reference {
+            diesel::update(implementations::table.filter(implementations::id.eq(imp.id)))
+                .set(implementations::is_reference.eq(is_reference))
+                .execute(conn)
+                .expect("failed to update implementation reference marker");
+        }
         return imp.id;
     }
 
@@ -174,6 +296,7 @@ fn ensure_implementation(conn: &mut SqliteConnection, algorithm_id: i32, library
         .values(&NewImplementation {
             algorithm_id,
             library_id,
+            is_reference,
         })
         .returning(implementations::id)
         .get_result::<i32>(conn)
@@ -272,6 +395,26 @@ fn matchms_version() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+fn ms_entropy_version() -> String {
+    std::process::Command::new("uv")
+        .args([
+            "run",
+            "python3",
+            "-c",
+            "import ms_entropy; print(ms_entropy.__version__)",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 pub fn get_implementation_id(conn: &mut SqliteConnection, algo_name: &str, lib_name: &str) -> i32 {
     implementations::table
         .inner_join(algorithms::table)
@@ -294,6 +437,7 @@ pub fn load_experiments(conn: &mut SqliteConnection) -> Vec<Experiment> {
 mod tests {
     use super::*;
     use diesel::dsl::count_star;
+    use std::collections::BTreeMap;
 
     fn setup_in_memory_connection() -> SqliteConnection {
         SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite connection")
@@ -339,8 +483,8 @@ source = "git+https://example.com/repo#abc123def"
             .first::<i64>(&mut conn)
             .expect("failed to count experiments");
 
-        assert_eq!(algorithm_count, 3);
-        assert_eq!(implementation_count, 5);
+        assert_eq!(algorithm_count, 5);
+        assert_eq!(implementation_count, 9);
         assert_eq!(experiment_count, PARAM_SETS.len() as i64);
     }
 
@@ -356,6 +500,20 @@ source = "git+https://example.com/repo#abc123def"
         let rust_modified =
             get_implementation_id(&mut conn, "ModifiedCosine", "mass-spectrometry-traits");
         let matchms_modified = get_implementation_id(&mut conn, "ModifiedCosine", "matchms");
+        let rust_entropy_weighted = get_implementation_id(
+            &mut conn,
+            "EntropySimilarityWeighted",
+            "mass-spectrometry-traits",
+        );
+        let py_entropy_weighted =
+            get_implementation_id(&mut conn, "EntropySimilarityWeighted", "ms_entropy");
+        let rust_entropy_unweighted = get_implementation_id(
+            &mut conn,
+            "EntropySimilarityUnweighted",
+            "mass-spectrometry-traits",
+        );
+        let py_entropy_unweighted =
+            get_implementation_id(&mut conn, "EntropySimilarityUnweighted", "ms_entropy");
 
         assert_ne!(rust_hungarian, matchms_hungarian);
         assert_ne!(matchms_hungarian, matchms_greedy);
@@ -364,6 +522,10 @@ source = "git+https://example.com/repo#abc123def"
         assert_ne!(rust_hungarian, rust_modified);
         assert_ne!(matchms_hungarian, matchms_modified);
         assert_ne!(matchms_greedy, matchms_modified);
+        assert_ne!(rust_entropy_weighted, py_entropy_weighted);
+        assert_ne!(rust_entropy_unweighted, py_entropy_unweighted);
+        assert_ne!(rust_entropy_weighted, rust_entropy_unweighted);
+        assert_ne!(py_entropy_weighted, py_entropy_unweighted);
     }
 
     #[test]
@@ -376,5 +538,50 @@ source = "git+https://example.com/repo#abc123def"
             loaded.windows(2).all(|w| w[0].id < w[1].id),
             "experiments should be returned in ascending id order"
         );
+    }
+
+    #[test]
+    fn seeds_exactly_one_reference_per_algorithm() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let rows: Vec<(i32, bool)> = implementations::table
+            .select((implementations::algorithm_id, implementations::is_reference))
+            .load(&mut conn)
+            .expect("failed to load implementation reference flags");
+
+        let mut refs_by_algorithm: BTreeMap<i32, usize> = BTreeMap::new();
+        for (algorithm_id, is_reference) in rows {
+            if is_reference {
+                *refs_by_algorithm.entry(algorithm_id).or_insert(0) += 1;
+            } else {
+                refs_by_algorithm.entry(algorithm_id).or_insert(0);
+            }
+        }
+
+        assert_eq!(refs_by_algorithm.len(), 5);
+        assert!(
+            refs_by_algorithm.values().all(|&n| n == 1),
+            "expected exactly one reference implementation per algorithm, got {refs_by_algorithm:?}"
+        );
+    }
+
+    #[test]
+    fn upgrades_legacy_implementations_table_with_reference_column() {
+        let mut conn = setup_in_memory_connection();
+        sql_query(
+            "CREATE TABLE implementations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                algorithm_id INTEGER NOT NULL,
+                library_id INTEGER NOT NULL,
+                UNIQUE(algorithm_id, library_id)
+            ) STRICT",
+        )
+        .execute(&mut conn)
+        .expect("failed to create legacy implementations table");
+
+        assert!(!implementations_has_column(&mut conn, "is_reference"));
+        ensure_implementations_reference_schema(&mut conn);
+        assert!(implementations_has_column(&mut conn, "is_reference"));
     }
 }

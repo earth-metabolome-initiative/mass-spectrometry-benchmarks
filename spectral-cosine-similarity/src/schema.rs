@@ -22,6 +22,7 @@ diesel::table! {
         id -> Integer,
         algorithm_id -> Integer,
         library_id -> Integer,
+        is_reference -> Bool,
     }
 }
 

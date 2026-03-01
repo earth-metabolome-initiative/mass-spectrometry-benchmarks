@@ -21,8 +21,13 @@ CREATE TABLE IF NOT EXISTS implementations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     algorithm_id INTEGER NOT NULL REFERENCES algorithms(id),
     library_id INTEGER NOT NULL REFERENCES libraries(id),
+    is_reference INTEGER NOT NULL DEFAULT 0 CHECK (is_reference IN (0, 1)),
     UNIQUE(algorithm_id, library_id)
 ) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_implementations_one_reference_per_algorithm
+ON implementations(algorithm_id)
+WHERE is_reference = 1;
 
 -- Experiment parameter sets (JSON blob for flexibility)
 CREATE TABLE IF NOT EXISTS experiments (

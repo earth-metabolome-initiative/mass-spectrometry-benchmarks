@@ -17,7 +17,6 @@ use crate::report;
 const FLUSH_BATCH: usize = 500;
 const CHART_UPDATE_INTERVAL: usize = 50_000;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
-const MATCHMS_LIBRARY_NAME: &str = "matchms";
 
 struct ComputeContext {
     experiments: Vec<Experiment>,
@@ -68,7 +67,11 @@ fn run_matchms_default(max_spectra: Option<usize>) {
         .expect("failed to run matchms_compute.py");
 
     if !status.success() {
-        eprintln!("[compute] WARNING: matchms_compute.py exited with {status}");
+        panic!(
+            "[compute] matchms_compute.py exited with {status}. \
+Install Python benchmark dependencies with `uv sync` in spectral-cosine-similarity/ \
+and ensure both `matchms` and `ms_entropy` import successfully."
+        );
     }
 }
 
@@ -248,37 +251,55 @@ where
         run_matchms,
         |params| ModifiedCosine::new(params.mz_power, params.intensity_power, params.tolerance),
     );
+    compute_rust_algorithm(
+        conn,
+        &context,
+        "EntropySimilarityWeighted",
+        max_spectra,
+        run_matchms,
+        |params| EntropySimilarity::weighted(params.tolerance),
+    );
+    compute_rust_algorithm(
+        conn,
+        &context,
+        "EntropySimilarityUnweighted",
+        max_spectra,
+        run_matchms,
+        |params| EntropySimilarity::unweighted(params.tolerance),
+    );
 
     // Final matchms run to catch any remaining work
     run_matchms(max_spectra);
 }
 
 fn print_timing_report(conn: &mut SqliteConnection) {
-    let implementation_rows: Vec<(String, String, i32)> = crate::schema::implementations::table
-        .inner_join(crate::schema::algorithms::table)
-        .inner_join(crate::schema::libraries::table)
-        .order((
-            crate::schema::algorithms::name.asc(),
-            crate::schema::libraries::name.asc(),
-            crate::schema::implementations::id.asc(),
-        ))
-        .select((
-            crate::schema::algorithms::name,
-            crate::schema::libraries::name,
-            crate::schema::implementations::id,
-        ))
-        .load(conn)
-        .expect("failed to load implementations for timing report");
+    let implementation_rows: Vec<(String, String, i32, bool)> =
+        crate::schema::implementations::table
+            .inner_join(crate::schema::algorithms::table)
+            .inner_join(crate::schema::libraries::table)
+            .order((
+                crate::schema::algorithms::name.asc(),
+                crate::schema::libraries::name.asc(),
+                crate::schema::implementations::id.asc(),
+            ))
+            .select((
+                crate::schema::algorithms::name,
+                crate::schema::libraries::name,
+                crate::schema::implementations::id,
+                crate::schema::implementations::is_reference,
+            ))
+            .load(conn)
+            .expect("failed to load implementations for timing report");
 
-    let mut by_algorithm: BTreeMap<String, Vec<(String, i32)>> = BTreeMap::new();
-    for (algorithm, library, implementation_id) in implementation_rows {
+    let mut by_algorithm: BTreeMap<String, Vec<(String, i32, bool)>> = BTreeMap::new();
+    for (algorithm, library, implementation_id, is_reference) in implementation_rows {
         by_algorithm
             .entry(algorithm)
             .or_default()
-            .push((library, implementation_id));
+            .push((library, implementation_id, is_reference));
     }
     for libraries in by_algorithm.values_mut() {
-        libraries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        libraries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     }
 
     eprintln!("\n=== Timing Report ===\n");
@@ -286,12 +307,9 @@ fn print_timing_report(conn: &mut SqliteConnection) {
     for (algorithm, libraries) in by_algorithm {
         let rust_impl = libraries
             .iter()
-            .find(|(library, _)| library == RUST_LIBRARY_NAME)
-            .map(|(_, implementation_id)| *implementation_id);
-        let matchms_impl = libraries
-            .iter()
-            .find(|(library, _)| library == MATCHMS_LIBRARY_NAME)
-            .map(|(_, implementation_id)| *implementation_id);
+            .find(|(library, _, _)| library == RUST_LIBRARY_NAME)
+            .map(|(_, implementation_id, _)| *implementation_id);
+        let reference_impl = libraries.iter().find(|(_, _, is_reference)| *is_reference);
 
         let rust_stats = rust_impl.and_then(|implementation_id| {
             timing_stats(
@@ -300,31 +318,34 @@ fn print_timing_report(conn: &mut SqliteConnection) {
                 &format!("{algorithm} ({RUST_LIBRARY_NAME})"),
             )
         });
-        let matchms_stats = matchms_impl.and_then(|implementation_id| {
-            timing_stats(
-                conn,
-                implementation_id,
-                &format!("{algorithm} ({MATCHMS_LIBRARY_NAME})"),
-            )
-        });
+        let reference_stats =
+            reference_impl.and_then(|(reference_library, implementation_id, _)| {
+                timing_stats(
+                    conn,
+                    *implementation_id,
+                    &format!("{algorithm} ({reference_library})"),
+                )
+            });
 
         if let Some(ref stats) = rust_stats {
             print_algo_stats(stats);
         }
-        if let Some(ref stats) = matchms_stats {
+        if let Some(ref stats) = reference_stats {
             print_algo_stats(stats);
         }
 
-        if let (Some(rust), Some(matchms)) = (&rust_stats, &matchms_stats)
+        if let (Some(rust), Some(reference)) = (&rust_stats, &reference_stats)
             && rust.mean > 0.0
-            && matchms.mean > 0.0
+            && reference.mean > 0.0
         {
-            let speedup = matchms.mean / rust.mean;
-            eprintln!("Speedup ({algorithm}, Rust vs matchms): {speedup:.1}x");
+            let speedup = reference.mean / rust.mean;
+            if let Some((reference_library, _, _)) = reference_impl {
+                eprintln!("Speedup ({algorithm}, Rust vs {reference_library}): {speedup:.1}x");
+            }
         }
 
-        for (library, implementation_id) in libraries {
-            if library == RUST_LIBRARY_NAME || library == MATCHMS_LIBRARY_NAME {
+        for (library, implementation_id, is_reference) in libraries {
+            if library == RUST_LIBRARY_NAME || is_reference {
                 continue;
             }
             if let Some(stats) =

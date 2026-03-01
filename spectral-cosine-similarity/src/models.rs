@@ -52,6 +52,7 @@ pub struct Implementation {
     pub id: i32,
     pub algorithm_id: i32,
     pub library_id: i32,
+    pub is_reference: bool,
 }
 
 #[derive(Insertable, Debug)]
@@ -59,6 +60,7 @@ pub struct Implementation {
 pub struct NewImplementation {
     pub algorithm_id: i32,
     pub library_id: i32,
+    pub is_reference: bool,
 }
 
 // --- Experiments ---

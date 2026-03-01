@@ -286,9 +286,14 @@ mod tests {
 
     #[test]
     fn spectrum_hash_is_order_invariant_and_quantized() {
+        let pmz_base = 500.123_44_f32;
+        let pmz_nearly_equal = pmz_base + 1e-8_f32;
+        let mz_base = 200.123_46_f32;
+        let mz_nearly_equal = mz_base + 1e-8_f32;
+
         assert_eq!(
-            canonicalize_component(500.123_456_1),
-            canonicalize_component(500.123_456_2)
+            canonicalize_component(pmz_base),
+            canonicalize_component(pmz_nearly_equal)
         );
         assert_ne!(
             canonicalize_component(500.123_4),
@@ -296,16 +301,19 @@ mod tests {
         );
 
         let h1 = compute_spectrum_hash(
-            500.123_456_1,
-            &[(200.123_456_4, 10.000_000_4), (100.000_000_4, 1.000_000_4)],
+            pmz_base,
+            &[(mz_base, 10.000_000_4), (100.000_000_4, 1.000_000_4)],
         );
         let h2 = compute_spectrum_hash(
-            500.123_456_2,
-            &[(100.000_000_4, 1.000_000_4), (200.123_456_4, 10.000_000_4)],
+            pmz_nearly_equal,
+            &[
+                (100.000_000_4, 1.000_000_4),
+                (mz_nearly_equal, 10.000_000_4),
+            ],
         );
         let h3 = compute_spectrum_hash(
-            500.123_456_1,
-            &[(200.123_456_4, 10.000_000_4), (100.000_000_4, 1.100_000_4)],
+            pmz_base,
+            &[(mz_base, 10.000_000_4), (100.000_000_4, 1.100_000_4)],
         );
 
         assert_eq!(h1, h2);
