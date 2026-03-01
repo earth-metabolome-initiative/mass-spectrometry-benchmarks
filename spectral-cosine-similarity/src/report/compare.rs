@@ -1,6 +1,6 @@
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{Float, Integer, Text};
+use diesel::sql_types::{Double, Integer, Text};
 use diesel::sqlite::SqliteConnection;
 
 use crate::progress::StageProgress;
@@ -30,12 +30,12 @@ struct ComparisonRow {
     right_id: i32,
     #[diesel(sql_type = Integer)]
     experiment_id: i32,
-    #[diesel(sql_type = Float)]
-    rust_score: f32,
+    #[diesel(sql_type = Double)]
+    rust_score: f64,
     #[diesel(sql_type = Integer)]
     rust_matches: i32,
-    #[diesel(sql_type = Float)]
-    reference_score: f32,
+    #[diesel(sql_type = Double)]
+    reference_score: f64,
     #[diesel(sql_type = Integer)]
     reference_matches: i32,
 }
@@ -86,7 +86,7 @@ pub(crate) fn compare_results(
         return;
     }
 
-    let mut max_score_diff: f32 = 0.0;
+    let mut max_score_diff: f64 = 0.0;
     let mut max_match_diff: i32 = 0;
     let mut sum_sq_score: f64 = 0.0;
     let mut mismatch_count = 0usize;
@@ -103,7 +103,7 @@ pub(crate) fn compare_results(
             max_match_diff = match_diff;
         }
 
-        sum_sq_score += (score_diff as f64) * (score_diff as f64);
+        sum_sq_score += score_diff * score_diff;
 
         let mismatch = if algorithm_uses_match_count_parity(&row.algorithm_name) {
             score_diff > 1e-6 || match_diff > 0

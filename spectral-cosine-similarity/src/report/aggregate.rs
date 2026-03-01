@@ -79,8 +79,8 @@ pub(crate) fn std_dev(values: &[f64]) -> f64 {
 }
 
 #[cfg(test)]
-fn build_reference_score_index(data: &[ResultRow]) -> HashMap<i32, HashMap<(i32, i32, i32), f32>> {
-    let mut reference_scores: HashMap<i32, HashMap<(i32, i32, i32), f32>> = HashMap::new();
+fn build_reference_score_index(data: &[ResultRow]) -> HashMap<i32, HashMap<(i32, i32, i32), f64>> {
+    let mut reference_scores: HashMap<i32, HashMap<(i32, i32, i32), f64>> = HashMap::new();
     for row in data.iter().filter(|r| r.is_reference) {
         reference_scores
             .entry(row.implementation_id)
@@ -229,7 +229,7 @@ pub(crate) fn build_metric_chart(
         references,
         n_buckets,
         |row, reference| match metric {
-            MetricKind::Timing => Some(row.median_time_us as f64),
+            MetricKind::Timing => Some(row.median_time_us),
             MetricKind::Rmse => {
                 if row.implementation_id == reference.implementation_id {
                     return None;
@@ -239,7 +239,7 @@ pub(crate) fn build_metric_chart(
                     .as_ref()
                     .and_then(|index| index.get(&reference.implementation_id))?;
                 let ref_score = *algo_refs.get(&(row.left_id, row.right_id, row.experiment_id))?;
-                let diff = row.score as f64 - ref_score as f64;
+                let diff = row.score - ref_score;
                 let squared_error = diff * diff;
                 Some(squared_error.max(RMSE_LOG_FLOOR * RMSE_LOG_FLOOR))
             }

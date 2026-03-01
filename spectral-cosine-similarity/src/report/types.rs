@@ -30,8 +30,8 @@ pub(crate) struct AlgorithmReference {
 pub(crate) struct ResultRow {
     pub(crate) implementation_id: i32,
     pub(crate) is_reference: bool,
-    pub(crate) score: f32,
-    pub(crate) median_time_us: f32,
+    pub(crate) score: f64,
+    pub(crate) median_time_us: f64,
     pub(crate) algo_name: String,
     pub(crate) lib_name: String,
     pub(crate) left_id: i32,
