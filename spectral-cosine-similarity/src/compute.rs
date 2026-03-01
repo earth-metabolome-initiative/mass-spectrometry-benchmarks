@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hint::black_box;
+use std::result::Result as StdResult;
 use std::time::Instant;
 
 use diesel::prelude::*;
@@ -25,6 +26,19 @@ const RUST_ALGORITHMS: [&str; 4] = [
     "EntropySimilarityWeighted",
     "EntropySimilarityUnweighted",
 ];
+
+fn build_similarity_or_panic<T>(
+    algorithm_name: &str,
+    params: &ExperimentParams,
+    build: impl FnOnce() -> StdResult<T, SimilarityConfigError>,
+) -> T {
+    build().unwrap_or_else(|err| {
+        panic!(
+            "[compute] failed to build {algorithm_name} with params {:?}: {err:?}",
+            params
+        )
+    })
+}
 
 struct ComputeContext {
     experiments: Vec<Experiment>,
@@ -216,7 +230,7 @@ where
     S: ScalarSimilarity<
             GenericSpectrum<f32, f32>,
             GenericSpectrum<f32, f32>,
-            Similarity = (f32, u16),
+            Similarity = StdResult<(f32, usize), SimilarityComputationError>,
         >,
 {
     let impl_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
@@ -294,19 +308,37 @@ where
 
         // Warmup the specific algorithm implementation for this pair/parameter set.
         for _ in 0..params.n_warmup {
-            let _ = black_box(similarity.similarity(black_box(left), black_box(right)));
+            let _ = black_box(similarity.similarity(black_box(left), black_box(right)))
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "[compute] {algorithm_name} warmup failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
+                        exp.id
+                    )
+                });
         }
 
         // Timed runs
         let mut times_ns: Vec<u128> = Vec::with_capacity(params.n_reps as usize);
-        let mut last_result = (0.0f32, 0u16);
+        let mut last_result = (0.0f32, 0usize);
         for _ in 0..params.n_reps {
             let t0 = Instant::now();
-            last_result = black_box(similarity.similarity(black_box(left), black_box(right)));
+            last_result = black_box(similarity.similarity(black_box(left), black_box(right)))
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "[compute] {algorithm_name} run failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
+                        exp.id
+                    )
+                });
             times_ns.push(t0.elapsed().as_nanos());
         }
 
         let (score, matches) = last_result;
+        let matches = i32::try_from(matches).unwrap_or_else(|_| {
+            panic!(
+                "[compute] {algorithm_name} produced matches={} that does not fit i32 for left_id={left_id}, right_id={right_id}, experiment_id={}",
+                matches, exp.id
+            )
+        });
         times_ns.sort_unstable();
         let median_ns = times_ns[params.n_reps as usize / 2];
         let median_us = median_ns as f32 / 1000.0;
@@ -317,7 +349,7 @@ where
             experiment_id: exp.id,
             implementation_id: impl_id,
             score,
-            matches: matches as i32,
+            matches,
             median_time_us: median_us,
         });
 
@@ -395,7 +427,11 @@ fn compute_all<F>(
         max_spectra,
         run_matchms,
         progress,
-        |params| ExactCosine::new(params.mz_power, params.intensity_power, params.tolerance),
+        |params| {
+            build_similarity_or_panic("CosineHungarian", params, || {
+                HungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+            })
+        },
     );
     compute_rust_algorithm(
         conn,
@@ -404,7 +440,15 @@ fn compute_all<F>(
         max_spectra,
         run_matchms,
         progress,
-        |params| ModifiedCosine::new(params.mz_power, params.intensity_power, params.tolerance),
+        |params| {
+            build_similarity_or_panic("ModifiedCosine", params, || {
+                ModifiedHungarianCosine::new(
+                    params.mz_power,
+                    params.intensity_power,
+                    params.tolerance,
+                )
+            })
+        },
     );
     compute_rust_algorithm(
         conn,
@@ -413,7 +457,11 @@ fn compute_all<F>(
         max_spectra,
         run_matchms,
         progress,
-        |params| EntropySimilarity::weighted(params.tolerance),
+        |params| {
+            build_similarity_or_panic("EntropySimilarityWeighted", params, || {
+                EntropySimilarity::weighted(params.tolerance)
+            })
+        },
     );
     compute_rust_algorithm(
         conn,
@@ -422,7 +470,11 @@ fn compute_all<F>(
         max_spectra,
         run_matchms,
         progress,
-        |params| EntropySimilarity::unweighted(params.tolerance),
+        |params| {
+            build_similarity_or_panic("EntropySimilarityUnweighted", params, || {
+                EntropySimilarity::unweighted(params.tolerance)
+            })
+        },
     );
 
     // Final matchms run to catch any remaining work
