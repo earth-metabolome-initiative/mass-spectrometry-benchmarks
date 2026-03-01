@@ -19,7 +19,6 @@ from python_ref.algorithms import cosine_greedy
 from python_ref.algorithms import cosine_hungarian
 from python_ref.algorithms import entropy_unweighted
 from python_ref.algorithms import entropy_weighted
-from python_ref.algorithms import modified_cosine
 from python_ref.algorithms import modified_greedy_cosine
 
 DB_PATH = sys.argv[1] if len(sys.argv) > 1 else "fixtures/benchmark.db"
@@ -29,7 +28,6 @@ MAX_SPECTRA = int(sys.argv[3]) if len(sys.argv) > 3 else None
 ALGORITHMS = [
     ("CosineHungarian", "matchms", cosine_hungarian.compute_once),
     ("CosineGreedy", "matchms", cosine_greedy.compute_once),
-    ("ModifiedCosineApprox", "matchms", modified_cosine.compute_once),
     ("ModifiedGreedyCosine", "matchms", modified_greedy_cosine.compute_once),
     ("EntropySimilarityWeighted", "ms_entropy", entropy_weighted.compute_once),
     ("EntropySimilarityUnweighted", "ms_entropy", entropy_unweighted.compute_once),

@@ -106,11 +106,7 @@ mod tests {
             );
         }
 
-        for algorithm in [
-            "ModifiedCosine",
-            "ModifiedCosineApprox",
-            "ModifiedGreedyCosine",
-        ] {
+        for algorithm in ["ModifiedCosine", "ModifiedGreedyCosine"] {
             let row = rows
                 .iter()
                 .find(|r| r.algorithm_name == algorithm)

@@ -759,17 +759,11 @@ mod tests {
                 ..sample_row(30, true, "ModifiedCosine", "mass-spectrometry-traits")
             },
             ResultRow {
-                score: 0.85,
-                median_time_us: 9.0,
-                right_id: 2,
-                ..sample_row(31, false, "ModifiedCosineApprox", "matchms")
-            },
-            ResultRow {
                 score: 0.84,
                 median_time_us: 8.0,
                 right_id: 2,
                 ..sample_row(
-                    32,
+                    31,
                     false,
                     "ModifiedGreedyCosine",
                     "mass-spectrometry-traits",
@@ -779,16 +773,12 @@ mod tests {
                 score: 0.83,
                 median_time_us: 7.0,
                 right_id: 2,
-                ..sample_row(33, false, "ModifiedGreedyCosine", "matchms")
+                ..sample_row(32, false, "ModifiedGreedyCosine", "matchms")
             },
         ];
 
         let canonical_map: HashMap<String, String> = HashMap::from([
             ("ModifiedCosine".to_string(), "ModifiedCosine".to_string()),
-            (
-                "ModifiedCosineApprox".to_string(),
-                "ModifiedCosine".to_string(),
-            ),
             (
                 "ModifiedGreedyCosine".to_string(),
                 "ModifiedCosine".to_string(),
@@ -804,13 +794,6 @@ mod tests {
             .iter()
             .find(|f| f.title == "Reference: ModifiedCosine (mass-spectrometry-traits)")
             .expect("missing ModifiedCosine reference facet");
-        assert!(
-            facet
-                .series
-                .iter()
-                .any(|s| s.label == "ModifiedCosineApprox (matchms)"),
-            "ModifiedCosineApprox series should be plotted against ModifiedCosine reference"
-        );
         assert!(
             facet
                 .series

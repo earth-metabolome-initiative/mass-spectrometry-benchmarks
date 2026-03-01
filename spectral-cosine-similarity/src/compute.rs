@@ -856,12 +856,9 @@ mod tests {
         db::initialize(&mut conn);
 
         let python_impls = python_implementation_ids(&mut conn);
-        let matchms_modified =
-            db::get_implementation_id(&mut conn, "ModifiedCosineApprox", "matchms");
         let matchms_modified_greedy =
             db::get_implementation_id(&mut conn, "ModifiedGreedyCosine", "matchms");
-        assert!(python_impls.contains(&matchms_modified));
         assert!(python_impls.contains(&matchms_modified_greedy));
-        assert_eq!(python_impls.len(), 6);
+        assert_eq!(python_impls.len(), 5);
     }
 }
