@@ -21,13 +21,48 @@ const FLUSH_BATCH: usize = 500;
 const CHART_UPDATE_INTERVAL: usize = 50_000;
 const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
-const RUST_ALGORITHMS: [&str; 6] = [
-    "CosineHungarian",
-    "CosineGreedy",
-    "ModifiedCosine",
-    "ModifiedGreedyCosine",
-    "EntropySimilarityWeighted",
-    "EntropySimilarityUnweighted",
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RustAlgoKind {
+    CosineHungarian,
+    CosineGreedy,
+    ModifiedCosine,
+    ModifiedGreedyCosine,
+    EntropySimilarityWeighted,
+    EntropySimilarityUnweighted,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RustAlgoSpec {
+    kind: RustAlgoKind,
+    algorithm_name: &'static str,
+}
+
+const RUST_ALGO_SPECS: [RustAlgoSpec; 6] = [
+    RustAlgoSpec {
+        kind: RustAlgoKind::CosineHungarian,
+        algorithm_name: "CosineHungarian",
+    },
+    RustAlgoSpec {
+        kind: RustAlgoKind::CosineGreedy,
+        algorithm_name: "CosineGreedy",
+    },
+    RustAlgoSpec {
+        kind: RustAlgoKind::ModifiedCosine,
+        algorithm_name: "ModifiedCosine",
+    },
+    RustAlgoSpec {
+        kind: RustAlgoKind::ModifiedGreedyCosine,
+        algorithm_name: "ModifiedGreedyCosine",
+    },
+    RustAlgoSpec {
+        kind: RustAlgoKind::EntropySimilarityWeighted,
+        algorithm_name: "EntropySimilarityWeighted",
+    },
+    RustAlgoSpec {
+        kind: RustAlgoKind::EntropySimilarityUnweighted,
+        algorithm_name: "EntropySimilarityUnweighted",
+    },
 ];
 
 fn algorithm_cli_label(algorithm_name: &str, library_name: &str) -> String {
@@ -207,12 +242,18 @@ fn count_python_results(conn: &mut SqliteConnection, spectrum_ids_filter: Option
         .sum()
 }
 
+fn is_tracked_rust_algorithm(algorithm_name: &str) -> bool {
+    RUST_ALGO_SPECS
+        .iter()
+        .any(|spec| spec.algorithm_name == algorithm_name)
+}
+
 fn tracked_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
     let mut ids: Vec<i32> = benchmark_topology::load_resolved_implementations(conn)
         .into_iter()
         .filter(|row| {
             (row.library_name == RUST_LIBRARY_NAME
-                && RUST_ALGORITHMS.contains(&row.algorithm_name.as_str()))
+                && is_tracked_rust_algorithm(&row.algorithm_name))
                 || row.library_language == "python"
         })
         .map(|row| row.implementation_id)
@@ -300,6 +341,62 @@ fn load_compute_context(conn: &mut SqliteConnection, max_spectra: Option<usize>)
     }
 }
 
+fn load_existing_result_keys(
+    conn: &mut SqliteConnection,
+    implementation_id: i32,
+    spectrum_ids_filter: Option<&[i32]>,
+) -> HashSet<(i32, i32, i32)> {
+    let mut existing_query = crate::schema::results::table
+        .filter(crate::schema::results::implementation_id.eq(implementation_id))
+        .into_boxed();
+    if let Some(ids) = spectrum_ids_filter {
+        existing_query = existing_query
+            .filter(crate::schema::results::left_id.eq_any(ids))
+            .filter(crate::schema::results::right_id.eq_any(ids));
+    }
+
+    existing_query
+        .order((
+            crate::schema::results::left_id.asc(),
+            crate::schema::results::right_id.asc(),
+            crate::schema::results::experiment_id.asc(),
+        ))
+        .select((
+            crate::schema::results::left_id,
+            crate::schema::results::right_id,
+            crate::schema::results::experiment_id,
+        ))
+        .load::<(i32, i32, i32)>(conn)
+        .expect("failed to load existing results")
+        .into_iter()
+        .collect()
+}
+
+fn run_python_pass<F>(
+    conn: &mut SqliteConnection,
+    run_matchms: &F,
+    max_spectra: Option<usize>,
+    spectrum_ids_filter: Option<&[i32]>,
+    progress: &mut Option<&mut dyn StageProgress>,
+    progress_bar: Option<&ProgressBar>,
+    progress_label: &str,
+) where
+    F: Fn(Option<usize>),
+{
+    set_substep(progress, progress_label);
+    let before_python = count_python_results(conn, spectrum_ids_filter);
+    if let Some(pb) = progress_bar {
+        pb.suspend(|| {
+            run_matchms(max_spectra);
+        });
+    } else {
+        run_matchms(max_spectra);
+    }
+    let after_python = count_python_results(conn, spectrum_ids_filter);
+    let added_python_rows = after_python.saturating_sub(before_python);
+    inc_progress(progress, added_python_rows as u64);
+}
+
 fn compute_rust_algorithm<F, B, S>(
     conn: &mut SqliteConnection,
     context: &ComputeContext,
@@ -322,30 +419,8 @@ where
     let spectrum_ids_filter = max_spectra.map(|_| context.spectrum_ids.as_slice());
     let algorithm_label = algorithm_cli_label(algorithm_name, RUST_LIBRARY_NAME);
 
-    // Load existing results to skip completed work
-    let mut existing_query = crate::schema::results::table
-        .filter(crate::schema::results::implementation_id.eq(impl_id))
-        .into_boxed();
-    if let Some(ids) = spectrum_ids_filter {
-        existing_query = existing_query
-            .filter(crate::schema::results::left_id.eq_any(ids))
-            .filter(crate::schema::results::right_id.eq_any(ids));
-    }
-    let existing: HashSet<(i32, i32, i32)> = existing_query
-        .order((
-            crate::schema::results::left_id.asc(),
-            crate::schema::results::right_id.asc(),
-            crate::schema::results::experiment_id.asc(),
-        ))
-        .select((
-            crate::schema::results::left_id,
-            crate::schema::results::right_id,
-            crate::schema::results::experiment_id,
-        ))
-        .load::<(i32, i32, i32)>(conn)
-        .expect("failed to load existing results")
-        .into_iter()
-        .collect();
+    // Load existing results to skip completed work.
+    let existing = load_existing_result_keys(conn, impl_id, spectrum_ids_filter);
 
     // Work items: pairs not yet in results
     let mut work: Vec<(i32, i32, &Experiment)> = Vec::new();
@@ -455,18 +530,15 @@ where
 
             if total_done >= next_chart_update {
                 next_chart_update = total_done + CHART_UPDATE_INTERVAL;
-                set_substep(progress, "[compute] Running Python implementations");
-                let before_python = count_python_results(conn, spectrum_ids_filter);
-                if let Some(pb) = pb.as_ref() {
-                    pb.suspend(|| {
-                        run_matchms(max_spectra);
-                    });
-                } else {
-                    run_matchms(max_spectra);
-                }
-                let after_python = count_python_results(conn, spectrum_ids_filter);
-                let added_python_rows = after_python.saturating_sub(before_python);
-                inc_progress(progress, added_python_rows as u64);
+                run_python_pass(
+                    conn,
+                    run_matchms,
+                    max_spectra,
+                    spectrum_ids_filter,
+                    progress,
+                    pb.as_ref(),
+                    "[compute] Running Python implementations",
+                );
 
                 set_substep(progress, "[compute] Refreshing report charts");
                 let report_config = report::ReportConfig::default();
@@ -503,6 +575,107 @@ where
     total_done
 }
 
+fn compute_rust_algorithm_for_kind<F>(
+    conn: &mut SqliteConnection,
+    context: &ComputeContext,
+    spec: RustAlgoSpec,
+    max_spectra: Option<usize>,
+    run_matchms: &F,
+    progress: &mut Option<&mut dyn StageProgress>,
+) -> usize
+where
+    F: Fn(Option<usize>),
+{
+    match spec.kind {
+        RustAlgoKind::CosineHungarian => compute_rust_algorithm(
+            conn,
+            context,
+            spec.algorithm_name,
+            max_spectra,
+            run_matchms,
+            progress,
+            |params| {
+                build_similarity_or_panic(spec.algorithm_name, params, || {
+                    HungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+                })
+            },
+        ),
+        RustAlgoKind::CosineGreedy => compute_rust_algorithm(
+            conn,
+            context,
+            spec.algorithm_name,
+            max_spectra,
+            run_matchms,
+            progress,
+            |params| {
+                build_similarity_or_panic(spec.algorithm_name, params, || {
+                    GreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+                })
+            },
+        ),
+        RustAlgoKind::ModifiedCosine => compute_rust_algorithm(
+            conn,
+            context,
+            spec.algorithm_name,
+            max_spectra,
+            run_matchms,
+            progress,
+            |params| {
+                build_similarity_or_panic(spec.algorithm_name, params, || {
+                    ModifiedHungarianCosine::new(
+                        params.mz_power,
+                        params.intensity_power,
+                        params.tolerance,
+                    )
+                })
+            },
+        ),
+        RustAlgoKind::ModifiedGreedyCosine => compute_rust_algorithm(
+            conn,
+            context,
+            spec.algorithm_name,
+            max_spectra,
+            run_matchms,
+            progress,
+            |params| {
+                build_similarity_or_panic(spec.algorithm_name, params, || {
+                    ModifiedGreedyCosine::new(
+                        params.mz_power,
+                        params.intensity_power,
+                        params.tolerance,
+                    )
+                })
+            },
+        ),
+        RustAlgoKind::EntropySimilarityWeighted => compute_rust_algorithm(
+            conn,
+            context,
+            spec.algorithm_name,
+            max_spectra,
+            run_matchms,
+            progress,
+            |params| {
+                build_similarity_or_panic(spec.algorithm_name, params, || {
+                    EntropySimilarity::weighted(params.tolerance)
+                })
+            },
+        ),
+        RustAlgoKind::EntropySimilarityUnweighted => compute_rust_algorithm(
+            conn,
+            context,
+            spec.algorithm_name,
+            max_spectra,
+            run_matchms,
+            progress,
+            |params| {
+                build_similarity_or_panic(spec.algorithm_name, params, || {
+                    EntropySimilarity::unweighted(params.tolerance)
+                })
+            },
+        ),
+    }
+}
+
 fn compute_all<F>(
     conn: &mut SqliteConnection,
     max_spectra: Option<usize>,
@@ -516,96 +689,20 @@ fn compute_all<F>(
 
     set_substep(progress, "[compute] Starting Rust algorithms");
 
-    compute_rust_algorithm(
-        conn,
-        &context,
-        "CosineHungarian",
-        max_spectra,
-        run_matchms,
-        progress,
-        |params| {
-            build_similarity_or_panic("CosineHungarian", params, || {
-                HungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-            })
-        },
-    );
-    compute_rust_algorithm(
-        conn,
-        &context,
-        "CosineGreedy",
-        max_spectra,
-        run_matchms,
-        progress,
-        |params| {
-            build_similarity_or_panic("CosineGreedy", params, || {
-                GreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-            })
-        },
-    );
-    compute_rust_algorithm(
-        conn,
-        &context,
-        "ModifiedCosine",
-        max_spectra,
-        run_matchms,
-        progress,
-        |params| {
-            build_similarity_or_panic("ModifiedCosine", params, || {
-                ModifiedHungarianCosine::new(
-                    params.mz_power,
-                    params.intensity_power,
-                    params.tolerance,
-                )
-            })
-        },
-    );
-    compute_rust_algorithm(
-        conn,
-        &context,
-        "ModifiedGreedyCosine",
-        max_spectra,
-        run_matchms,
-        progress,
-        |params| {
-            build_similarity_or_panic("ModifiedGreedyCosine", params, || {
-                ModifiedGreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-            })
-        },
-    );
-    compute_rust_algorithm(
-        conn,
-        &context,
-        "EntropySimilarityWeighted",
-        max_spectra,
-        run_matchms,
-        progress,
-        |params| {
-            build_similarity_or_panic("EntropySimilarityWeighted", params, || {
-                EntropySimilarity::weighted(params.tolerance)
-            })
-        },
-    );
-    compute_rust_algorithm(
-        conn,
-        &context,
-        "EntropySimilarityUnweighted",
-        max_spectra,
-        run_matchms,
-        progress,
-        |params| {
-            build_similarity_or_panic("EntropySimilarityUnweighted", params, || {
-                EntropySimilarity::unweighted(params.tolerance)
-            })
-        },
-    );
+    for spec in RUST_ALGO_SPECS {
+        compute_rust_algorithm_for_kind(conn, &context, spec, max_spectra, run_matchms, progress);
+    }
 
-    // Final matchms run to catch any remaining work
-    set_substep(progress, "[compute] Final Python implementation pass");
-    let before_python = count_python_results(conn, spectrum_ids_filter);
-    run_matchms(max_spectra);
-    let after_python = count_python_results(conn, spectrum_ids_filter);
-    let added_python_rows = after_python.saturating_sub(before_python);
-    inc_progress(progress, added_python_rows as u64);
+    // Final Python pass to catch any remaining work.
+    run_python_pass(
+        conn,
+        run_matchms,
+        max_spectra,
+        spectrum_ids_filter,
+        progress,
+        None,
+        "[compute] Final Python implementation pass",
+    );
 }
 
 fn print_timing_report(conn: &mut SqliteConnection) {
