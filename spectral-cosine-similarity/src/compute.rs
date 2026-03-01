@@ -15,10 +15,9 @@ use crate::db;
 use crate::models::*;
 use crate::pair_selection::generate_pairs;
 use crate::progress::StageProgress;
-use crate::report;
 
 const FLUSH_BATCH: usize = 500;
-const CHART_UPDATE_INTERVAL: usize = 50_000;
+const PYTHON_BATCH_SIZE: usize = 50_000;
 const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
 
@@ -109,8 +108,7 @@ fn inc_progress(progress: &mut Option<&mut dyn StageProgress>, units: u64) {
     }
 }
 
-/// Compute similarities and timings for all implementations in a single pass,
-/// interleaving Rust and Python in batches so that charts stay up to date.
+/// Compute similarities and timings for all implementations.
 pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
     run_with_progress(conn, max_spectra, None);
 }
@@ -159,7 +157,7 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
 
 fn run_matchms_default(max_spectra: Option<usize>) {
     let db = db::db_path(max_spectra);
-    let batch_size = CHART_UPDATE_INTERVAL.to_string();
+    let batch_size = PYTHON_BATCH_SIZE.to_string();
     let mut cmd = std::process::Command::new("uv");
     cmd.args([
         "run",
@@ -397,17 +395,15 @@ fn run_python_pass<F>(
     inc_progress(progress, added_python_rows as u64);
 }
 
-fn compute_rust_algorithm<F, B, S>(
+fn compute_rust_algorithm<B, S>(
     conn: &mut SqliteConnection,
     context: &ComputeContext,
     algorithm_name: &str,
     max_spectra: Option<usize>,
-    run_matchms: &F,
     progress: &mut Option<&mut dyn StageProgress>,
     build_similarity: B,
 ) -> usize
 where
-    F: Fn(Option<usize>),
     B: Fn(&ExperimentParams) -> S,
     S: ScalarSimilarity<
             GenericSpectrum<f64, f64>,
@@ -461,8 +457,6 @@ where
 
     let mut batch: Vec<NewResult> = Vec::with_capacity(FLUSH_BATCH);
     let mut total_done: usize = 0;
-    let mut next_chart_update: usize = CHART_UPDATE_INTERVAL;
-
     for (left_id, right_id, exp) in work {
         let left = context
             .spectra_map
@@ -527,29 +521,6 @@ where
 
         if batch.len() >= FLUSH_BATCH {
             flush_results(conn, &mut batch);
-
-            if total_done >= next_chart_update {
-                next_chart_update = total_done + CHART_UPDATE_INTERVAL;
-                run_python_pass(
-                    conn,
-                    run_matchms,
-                    max_spectra,
-                    spectrum_ids_filter,
-                    progress,
-                    pb.as_ref(),
-                    "[compute] Running Python implementations",
-                );
-
-                set_substep(progress, "[compute] Refreshing report charts");
-                let report_config = report::ReportConfig::default();
-                if progress.is_some() {
-                    let report_progress =
-                        progress.as_deref_mut().map(|p| p as &mut dyn StageProgress);
-                    report::generate(conn, &report_config, report_progress);
-                } else {
-                    report::generate(conn, &report_config, None);
-                }
-            }
         }
 
         if let Some(pb) = pb.as_ref() {
@@ -575,24 +546,19 @@ where
     total_done
 }
 
-fn compute_rust_algorithm_for_kind<F>(
+fn compute_rust_algorithm_for_kind(
     conn: &mut SqliteConnection,
     context: &ComputeContext,
     spec: RustAlgoSpec,
     max_spectra: Option<usize>,
-    run_matchms: &F,
     progress: &mut Option<&mut dyn StageProgress>,
-) -> usize
-where
-    F: Fn(Option<usize>),
-{
+) -> usize {
     match spec.kind {
         RustAlgoKind::CosineHungarian => compute_rust_algorithm(
             conn,
             context,
             spec.algorithm_name,
             max_spectra,
-            run_matchms,
             progress,
             |params| {
                 build_similarity_or_panic(spec.algorithm_name, params, || {
@@ -605,7 +571,6 @@ where
             context,
             spec.algorithm_name,
             max_spectra,
-            run_matchms,
             progress,
             |params| {
                 build_similarity_or_panic(spec.algorithm_name, params, || {
@@ -618,7 +583,6 @@ where
             context,
             spec.algorithm_name,
             max_spectra,
-            run_matchms,
             progress,
             |params| {
                 build_similarity_or_panic(spec.algorithm_name, params, || {
@@ -635,7 +599,6 @@ where
             context,
             spec.algorithm_name,
             max_spectra,
-            run_matchms,
             progress,
             |params| {
                 build_similarity_or_panic(spec.algorithm_name, params, || {
@@ -652,7 +615,6 @@ where
             context,
             spec.algorithm_name,
             max_spectra,
-            run_matchms,
             progress,
             |params| {
                 build_similarity_or_panic(spec.algorithm_name, params, || {
@@ -665,7 +627,6 @@ where
             context,
             spec.algorithm_name,
             max_spectra,
-            run_matchms,
             progress,
             |params| {
                 build_similarity_or_panic(spec.algorithm_name, params, || {
@@ -690,7 +651,7 @@ fn compute_all<F>(
     set_substep(progress, "[compute] Starting Rust algorithms");
 
     for spec in RUST_ALGO_SPECS {
-        compute_rust_algorithm_for_kind(conn, &context, spec, max_spectra, run_matchms, progress);
+        compute_rust_algorithm_for_kind(conn, &context, spec, max_spectra, progress);
     }
 
     // Final Python pass to catch any remaining work.
