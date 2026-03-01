@@ -285,6 +285,7 @@ pub fn get_implementation_id(conn: &mut SqliteConnection, algo_name: &str, lib_n
 
 pub fn load_experiments(conn: &mut SqliteConnection) -> Vec<Experiment> {
     experiments::table
+        .order(experiments::id.asc())
         .load::<Experiment>(conn)
         .expect("failed to load experiments")
 }
@@ -363,5 +364,17 @@ source = "git+https://example.com/repo#abc123def"
         assert_ne!(rust_hungarian, rust_modified);
         assert_ne!(matchms_hungarian, matchms_modified);
         assert_ne!(matchms_greedy, matchms_modified);
+    }
+
+    #[test]
+    fn loads_experiments_in_id_order() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let loaded = load_experiments(&mut conn);
+        assert!(
+            loaded.windows(2).all(|w| w[0].id < w[1].id),
+            "experiments should be returned in ascending id order"
+        );
     }
 }

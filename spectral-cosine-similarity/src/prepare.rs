@@ -75,6 +75,7 @@ pub fn run_with_sources(
 ) {
     // Collect hashes already in the DB to avoid duplicates.
     let existing_hashes: std::collections::HashSet<String> = spectra::table
+        .order(spectra::id.asc())
         .select(spectra::spectrum_hash)
         .load::<String>(conn)
         .expect("failed to load existing spectrum hashes")

@@ -45,13 +45,13 @@ def get_implementation_id(cur: sqlite3.Cursor, algo_name: str, lib_name: str) ->
 
 
 def load_experiments(cur: sqlite3.Cursor) -> list[dict]:
-    cur.execute("SELECT id, params FROM experiments")
+    cur.execute("SELECT id, params FROM experiments ORDER BY id ASC")
     return [{"id": r[0], "params": json.loads(r[1])} for r in cur.fetchall()]
 
 
 def load_spectra(cur: sqlite3.Cursor) -> dict[int, tuple]:
     """Load all spectra from DB: id -> (Spectrum, num_peaks)."""
-    cur.execute("SELECT id, peaks, precursor_mz, num_peaks FROM spectra")
+    cur.execute("SELECT id, peaks, precursor_mz, num_peaks FROM spectra ORDER BY id ASC")
     spectra = {}
     for row in cur.fetchall():
         spec_id, peaks_json, precursor_mz, num_peaks = row
@@ -73,7 +73,12 @@ def generate_pairs(spectra: dict[int, tuple]) -> list[tuple[int, int]]:
 def get_existing_keys(cur: sqlite3.Cursor, impl_id: int) -> set[tuple[int, int, int]]:
     """Get existing (left_id, right_id, experiment_id) for this implementation."""
     cur.execute(
-        "SELECT left_id, right_id, experiment_id FROM results WHERE implementation_id = ?",
+        """
+        SELECT left_id, right_id, experiment_id
+        FROM results
+        WHERE implementation_id = ?
+        ORDER BY left_id ASC, right_id ASC, experiment_id ASC
+        """,
         (impl_id,),
     )
     return {(r[0], r[1], r[2]) for r in cur.fetchall()}

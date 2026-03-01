@@ -107,6 +107,7 @@ fn build_color_map(data: &[ResultRow]) -> HashMap<String, RGBColor> {
 /// Load peak counts for spectra: spectrum_id -> num_peaks
 fn load_spectra_peaks(conn: &mut SqliteConnection) -> HashMap<i32, i32> {
     spectra::table
+        .order(spectra::id.asc())
         .select((spectra::id, spectra::num_peaks))
         .load::<(i32, i32)>(conn)
         .expect("failed to load spectra peaks")
@@ -122,6 +123,13 @@ fn load_result_data(conn: &mut SqliteConnection) -> Vec<ResultRow> {
                 .inner_join(algorithms::table)
                 .inner_join(libraries::table),
         )
+        .order((
+            algorithms::name.asc(),
+            libraries::name.asc(),
+            results::experiment_id.asc(),
+            results::left_id.asc(),
+            results::right_id.asc(),
+        ))
         .select((
             results::score,
             results::median_time_us,

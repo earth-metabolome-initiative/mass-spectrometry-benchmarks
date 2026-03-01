@@ -76,6 +76,7 @@ fn load_compute_context(conn: &mut SqliteConnection) -> ComputeContext {
     let experiments = db::load_experiments(conn);
 
     let all_spectra: Vec<SpectrumRow> = crate::schema::spectra::table
+        .order(crate::schema::spectra::id.asc())
         .load(conn)
         .expect("failed to load spectra");
     let spectra_map: HashMap<i32, GenericSpectrum<f32, f32>> = all_spectra
@@ -115,6 +116,11 @@ where
     // Load existing results to skip completed work
     let existing: HashSet<(i32, i32, i32)> = crate::schema::results::table
         .filter(crate::schema::results::implementation_id.eq(impl_id))
+        .order((
+            crate::schema::results::left_id.asc(),
+            crate::schema::results::right_id.asc(),
+            crate::schema::results::experiment_id.asc(),
+        ))
         .select((
             crate::schema::results::left_id,
             crate::schema::results::right_id,
@@ -251,6 +257,11 @@ fn print_timing_report(conn: &mut SqliteConnection) {
     let implementation_rows: Vec<(String, String, i32)> = crate::schema::implementations::table
         .inner_join(crate::schema::algorithms::table)
         .inner_join(crate::schema::libraries::table)
+        .order((
+            crate::schema::algorithms::name.asc(),
+            crate::schema::libraries::name.asc(),
+            crate::schema::implementations::id.asc(),
+        ))
         .select((
             crate::schema::algorithms::name,
             crate::schema::libraries::name,
@@ -265,6 +276,9 @@ fn print_timing_report(conn: &mut SqliteConnection) {
             .entry(algorithm)
             .or_default()
             .push((library, implementation_id));
+    }
+    for libraries in by_algorithm.values_mut() {
+        libraries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     }
 
     eprintln!("\n=== Timing Report ===\n");
