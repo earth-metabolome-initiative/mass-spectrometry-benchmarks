@@ -1,6 +1,6 @@
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Text};
+use diesel::sql_types::{BigInt, Integer, Text};
 use diesel::sqlite::SqliteConnection;
 use std::path::Path;
 
@@ -78,7 +78,12 @@ pub fn initialize(conn: &mut SqliteConnection) {
     let modified_cosine_id = ensure_algorithm(
         conn,
         "ModifiedCosine",
-        Some("Precursor-shift-aware modified cosine similarity"),
+        Some("Exact precursor-shift-aware modified cosine similarity"),
+    );
+    let modified_cosine_approx_id = ensure_algorithm(
+        conn,
+        "ModifiedCosineApprox",
+        Some("Approximate precursor-shift-aware modified cosine similarity"),
     );
     let entropy_weighted_id = ensure_algorithm(
         conn,
@@ -93,6 +98,7 @@ pub fn initialize(conn: &mut SqliteConnection) {
     set_algorithm_approximation(conn, cosine_hungarian_id, None);
     set_algorithm_approximation(conn, cosine_greedy_id, Some(cosine_hungarian_id));
     set_algorithm_approximation(conn, modified_cosine_id, None);
+    set_algorithm_approximation(conn, modified_cosine_approx_id, Some(modified_cosine_id));
     set_algorithm_approximation(conn, entropy_weighted_id, None);
     set_algorithm_approximation(conn, entropy_unweighted_id, None);
 
@@ -101,12 +107,19 @@ pub fn initialize(conn: &mut SqliteConnection) {
     let matchms_lib_id = ensure_matchms_library(conn);
     let ms_entropy_lib_id = ensure_ms_entropy_library(conn);
 
+    migrate_legacy_modified_cosine_matchms_implementation(
+        conn,
+        modified_cosine_id,
+        modified_cosine_approx_id,
+        matchms_lib_id,
+    );
+
     // Seed implementations (same algorithm can have multiple implementations)
     ensure_implementation(conn, cosine_hungarian_id, rust_lib_id, false);
     ensure_implementation(conn, cosine_hungarian_id, matchms_lib_id, true);
     ensure_implementation(conn, cosine_greedy_id, matchms_lib_id, true);
-    ensure_implementation(conn, modified_cosine_id, rust_lib_id, false);
-    ensure_implementation(conn, modified_cosine_id, matchms_lib_id, true);
+    ensure_implementation(conn, modified_cosine_id, rust_lib_id, true);
+    ensure_implementation(conn, modified_cosine_approx_id, matchms_lib_id, true);
     ensure_implementation(conn, entropy_weighted_id, rust_lib_id, false);
     ensure_implementation(conn, entropy_weighted_id, ms_entropy_lib_id, true);
     ensure_implementation(conn, entropy_unweighted_id, rust_lib_id, false);
@@ -224,6 +237,64 @@ fn set_algorithm_approximation(
         .set(algorithms::approximates_algorithm_id.eq(approximates_algorithm_id))
         .execute(conn)
         .expect("failed to set algorithm approximation relationship");
+}
+
+fn migrate_legacy_modified_cosine_matchms_implementation(
+    conn: &mut SqliteConnection,
+    modified_cosine_id: i32,
+    modified_cosine_approx_id: i32,
+    matchms_library_id: i32,
+) {
+    let legacy_impl = implementations::table
+        .filter(implementations::algorithm_id.eq(modified_cosine_id))
+        .filter(implementations::library_id.eq(matchms_library_id))
+        .first::<Implementation>(conn)
+        .optional()
+        .expect("failed to query legacy modified cosine implementation");
+
+    let Some(legacy_impl) = legacy_impl else {
+        return;
+    };
+
+    let approx_impl = implementations::table
+        .filter(implementations::algorithm_id.eq(modified_cosine_approx_id))
+        .filter(implementations::library_id.eq(matchms_library_id))
+        .first::<Implementation>(conn)
+        .optional()
+        .expect("failed to query modified cosine approximation implementation");
+
+    if let Some(approx_impl) = approx_impl {
+        sql_query(
+            "DELETE FROM results
+             WHERE implementation_id = ?
+               AND EXISTS (
+                   SELECT 1
+                   FROM results r2
+                   WHERE r2.left_id = results.left_id
+                     AND r2.right_id = results.right_id
+                     AND r2.experiment_id = results.experiment_id
+                     AND r2.implementation_id = ?
+               )",
+        )
+        .bind::<Integer, _>(legacy_impl.id)
+        .bind::<Integer, _>(approx_impl.id)
+        .execute(conn)
+        .expect("failed to drop duplicate legacy modified cosine results");
+
+        diesel::update(results::table.filter(results::implementation_id.eq(legacy_impl.id)))
+            .set(results::implementation_id.eq(approx_impl.id))
+            .execute(conn)
+            .expect("failed to remap legacy modified cosine results");
+
+        diesel::delete(implementations::table.filter(implementations::id.eq(legacy_impl.id)))
+            .execute(conn)
+            .expect("failed to delete legacy modified cosine implementation");
+    } else {
+        diesel::update(implementations::table.filter(implementations::id.eq(legacy_impl.id)))
+            .set(implementations::algorithm_id.eq(modified_cosine_approx_id))
+            .execute(conn)
+            .expect("failed to migrate modified cosine matchms implementation");
+    }
 }
 
 fn ensure_rust_library(conn: &mut SqliteConnection) -> i32 {
@@ -527,7 +598,7 @@ source = "git+https://example.com/repo#abc123def"
             .first::<i64>(&mut conn)
             .expect("failed to count experiments");
 
-        assert_eq!(algorithm_count, 5);
+        assert_eq!(algorithm_count, 6);
         assert_eq!(implementation_count, 9);
         assert_eq!(experiment_count, PARAM_SETS.len() as i64);
     }
@@ -543,7 +614,8 @@ source = "git+https://example.com/repo#abc123def"
         let matchms_greedy = get_implementation_id(&mut conn, "CosineGreedy", "matchms");
         let rust_modified =
             get_implementation_id(&mut conn, "ModifiedCosine", "mass-spectrometry-traits");
-        let matchms_modified = get_implementation_id(&mut conn, "ModifiedCosine", "matchms");
+        let matchms_modified =
+            get_implementation_id(&mut conn, "ModifiedCosineApprox", "matchms");
         let rust_entropy_weighted = get_implementation_id(
             &mut conn,
             "EntropySimilarityWeighted",
@@ -603,7 +675,7 @@ source = "git+https://example.com/repo#abc123def"
             }
         }
 
-        assert_eq!(refs_by_algorithm.len(), 5);
+        assert_eq!(refs_by_algorithm.len(), 6);
         assert!(
             refs_by_algorithm.values().all(|&n| n == 1),
             "expected exactly one reference implementation per algorithm, got {refs_by_algorithm:?}"
@@ -636,6 +708,46 @@ source = "git+https://example.com/repo#abc123def"
             .expect("failed to load CosineHungarian approximation target");
 
         assert_eq!(cosine_hungarian_approx, None);
+    }
+
+    #[test]
+    fn seeds_modified_cosine_approx_as_approximation_of_modified_cosine() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let modified_cosine_id = algorithms::table
+            .filter(algorithms::name.eq("ModifiedCosine"))
+            .select(algorithms::id)
+            .first::<i32>(&mut conn)
+            .expect("failed to load ModifiedCosine id");
+
+        let modified_cosine_approx = algorithms::table
+            .filter(algorithms::name.eq("ModifiedCosineApprox"))
+            .select(algorithms::approximates_algorithm_id)
+            .first::<Option<i32>>(&mut conn)
+            .expect("failed to load ModifiedCosineApprox approximation target");
+
+        assert_eq!(modified_cosine_approx, Some(modified_cosine_id));
+
+        let rust_modified_ref = implementations::table
+            .inner_join(algorithms::table)
+            .inner_join(libraries::table)
+            .filter(algorithms::name.eq("ModifiedCosine"))
+            .filter(libraries::name.eq("mass-spectrometry-traits"))
+            .select(implementations::is_reference)
+            .first::<bool>(&mut conn)
+            .expect("failed to load ModifiedCosine rust reference flag");
+        assert!(rust_modified_ref);
+
+        let matchms_modified_ref = implementations::table
+            .inner_join(algorithms::table)
+            .inner_join(libraries::table)
+            .filter(algorithms::name.eq("ModifiedCosineApprox"))
+            .filter(libraries::name.eq("matchms"))
+            .select(implementations::is_reference)
+            .first::<bool>(&mut conn)
+            .expect("failed to load ModifiedCosineApprox matchms reference flag");
+        assert!(matchms_modified_ref);
     }
 
     #[test]

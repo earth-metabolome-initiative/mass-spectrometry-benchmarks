@@ -27,7 +27,7 @@ BATCH_SIZE = int(sys.argv[2]) if len(sys.argv) > 2 else None
 ALGORITHMS = [
     ("CosineHungarian", "matchms", cosine_hungarian.compute_once),
     ("CosineGreedy", "matchms", cosine_greedy.compute_once),
-    ("ModifiedCosine", "matchms", modified_cosine.compute_once),
+    ("ModifiedCosineApprox", "matchms", modified_cosine.compute_once),
     ("EntropySimilarityWeighted", "ms_entropy", entropy_weighted.compute_once),
     ("EntropySimilarityUnweighted", "ms_entropy", entropy_unweighted.compute_once),
 ]
