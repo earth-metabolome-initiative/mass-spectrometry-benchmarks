@@ -147,7 +147,9 @@ fn count_results_for_implementation(conn: &mut SqliteConnection, implementation_
 
 fn reference_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
     crate::schema::implementations::table
+        .inner_join(crate::schema::libraries::table)
         .filter(crate::schema::implementations::is_reference.eq(true))
+        .filter(crate::schema::libraries::name.ne(RUST_LIBRARY_NAME))
         .order(crate::schema::implementations::id.asc())
         .select(crate::schema::implementations::id)
         .load(conn)
