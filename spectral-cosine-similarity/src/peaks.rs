@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Serialized format: `[[mz, intensity], ...]`
 #[derive(Debug, Clone, Serialize, Deserialize, AsExpression, FromSqlRow)]
 #[diesel(sql_type = Text)]
-pub struct Peaks(pub Vec<(f32, f32)>);
+pub struct Peaks(pub Vec<(f64, f64)>);
 
 impl ToSql<Text, Sqlite> for Peaks {
     fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Sqlite>) -> serialize::Result {
@@ -25,13 +25,13 @@ impl FromSql<Text, Sqlite> for Peaks {
         bytes: <Sqlite as diesel::backend::Backend>::RawValue<'_>,
     ) -> deserialize::Result<Self> {
         let s = <String as FromSql<Text, Sqlite>>::from_sql(bytes)?;
-        let vec: Vec<(f32, f32)> = serde_json::from_str(&s)?;
+        let vec: Vec<(f64, f64)> = serde_json::from_str(&s)?;
         Ok(Peaks(vec))
     }
 }
 
 impl Peaks {
-    pub fn to_generic_spectrum(&self, precursor_mz: f32) -> GenericSpectrum<f32, f32> {
+    pub fn to_generic_spectrum(&self, precursor_mz: f64) -> GenericSpectrum<f64, f64> {
         let mut sorted = self.0.clone();
         sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         // Merge duplicate m/z values by summing their intensities
@@ -44,7 +44,7 @@ impl Peaks {
             }
         });
 
-        let mut spectrum = GenericSpectrum::<f32, f32>::with_capacity(precursor_mz, sorted.len())
+        let mut spectrum = GenericSpectrum::<f64, f64>::with_capacity(precursor_mz, sorted.len())
             .expect("failed to create GenericSpectrum with reserved peak capacity");
         for &(mz, intensity) in &sorted {
             spectrum

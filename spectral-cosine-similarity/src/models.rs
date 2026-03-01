@@ -88,9 +88,9 @@ pub struct NewExperiment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExperimentParams {
-    pub tolerance: f32,
-    pub mz_power: f32,
-    pub intensity_power: f32,
+    pub tolerance: f64,
+    pub mz_power: f64,
+    pub intensity_power: f64,
     pub n_warmup: u32,
     pub n_reps: u32,
 }
@@ -105,13 +105,13 @@ pub struct SpectrumRow {
     pub raw_name: String,
     pub source_file: String,
     pub spectrum_hash: String,
-    pub precursor_mz: f32,
+    pub precursor_mz: f64,
     pub num_peaks: i32,
     pub peaks: Peaks,
 }
 
 impl SpectrumRow {
-    pub fn to_generic_spectrum(&self) -> mass_spectrometry::prelude::GenericSpectrum<f32, f32> {
+    pub fn to_generic_spectrum(&self) -> mass_spectrometry::prelude::GenericSpectrum<f64, f64> {
         self.peaks.to_generic_spectrum(self.precursor_mz)
     }
 }
@@ -123,7 +123,7 @@ pub struct NewSpectrum {
     pub raw_name: String,
     pub source_file: String,
     pub spectrum_hash: String,
-    pub precursor_mz: f32,
+    pub precursor_mz: f64,
     pub num_peaks: i32,
     pub peaks: Peaks,
 }
@@ -138,9 +138,9 @@ pub struct Result {
     pub right_id: i32,
     pub experiment_id: i32,
     pub implementation_id: i32,
-    pub score: f32,
+    pub score: f64,
     pub matches: i32,
-    pub median_time_us: f32,
+    pub median_time_us: f64,
 }
 
 #[derive(Insertable, Debug)]
@@ -150,7 +150,7 @@ pub struct NewResult {
     pub right_id: i32,
     pub experiment_id: i32,
     pub implementation_id: i32,
-    pub score: f32,
+    pub score: f64,
     pub matches: i32,
-    pub median_time_us: f32,
+    pub median_time_us: f64,
 }

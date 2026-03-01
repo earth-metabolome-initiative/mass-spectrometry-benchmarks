@@ -12,20 +12,20 @@ use crate::schema::*;
 const MIN_PEAKS: usize = 5;
 const HASH_DECIMALS: usize = 6;
 
-fn canonicalize_component(value: f32) -> String {
+fn canonicalize_component(value: f64) -> String {
     if !value.is_finite() {
         return value.to_string().to_ascii_lowercase();
     }
 
     let scale = 10f64.powi(HASH_DECIMALS as i32);
-    let mut quantized = ((value as f64) * scale).round() / scale;
+    let mut quantized = (value * scale).round() / scale;
     if quantized == -0.0 {
         quantized = 0.0;
     }
     format!("{quantized:.6}")
 }
 
-fn compute_spectrum_hash(precursor_mz: f32, peaks: &[(f32, f32)]) -> String {
+fn compute_spectrum_hash(precursor_mz: f64, peaks: &[(f64, f64)]) -> String {
     let mut sorted = peaks.to_vec();
     sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
 
@@ -334,10 +334,10 @@ mod tests {
 
     #[test]
     fn spectrum_hash_is_order_invariant_and_quantized() {
-        let pmz_base = 500.123_44_f32;
-        let pmz_nearly_equal = pmz_base + 1e-8_f32;
-        let mz_base = 200.123_46_f32;
-        let mz_nearly_equal = mz_base + 1e-8_f32;
+        let pmz_base = 500.123_44_f64;
+        let pmz_nearly_equal = pmz_base + 1e-8_f64;
+        let mz_base = 200.123_46_f64;
+        let mz_nearly_equal = mz_base + 1e-8_f64;
 
         assert_eq!(
             canonicalize_component(pmz_base),

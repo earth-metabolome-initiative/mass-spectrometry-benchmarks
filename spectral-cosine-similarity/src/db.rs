@@ -21,7 +21,7 @@ const N_WARMUP: u32 = 3;
 const N_REPS: u32 = 10;
 
 /// Parameter sets: (tolerance, mz_power, intensity_power)
-const PARAM_SETS: [(f32, f32, f32); 4] = [
+const PARAM_SETS: [(f64, f64, f64); 4] = [
     (0.1, 0.0, 1.0), // matchms defaults
     (0.1, 1.0, 1.0), // current Rust test params
     (0.5, 1.0, 0.5), // stress test

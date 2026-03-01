@@ -6,8 +6,8 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct ParsedSpectrum {
     pub raw_name: String,
-    pub precursor_mz: f32,
-    pub peaks: Vec<(f32, f32)>, // (mz, intensity), sorted by mz
+    pub precursor_mz: f64,
+    pub peaks: Vec<(f64, f64)>, // (mz, intensity), sorted by mz
 }
 
 /// Parse an MGF file and return all spectra with a name, precursor_mz, and at least `min_peaks` peaks.
@@ -17,8 +17,8 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> Vec<ParsedSpectrum> {
 
     let mut spectra = Vec::new();
     let mut raw_name: Option<String> = None;
-    let mut precursor_mz: Option<f32> = None;
-    let mut peaks: Vec<(f32, f32)> = Vec::new();
+    let mut precursor_mz: Option<f64> = None;
+    let mut peaks: Vec<(f64, f64)> = Vec::new();
     let mut in_ions = false;
 
     for line in reader.lines() {
@@ -50,7 +50,7 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> Vec<ParsedSpectrum> {
                     "NAME" => raw_name = Some(val.to_string()),
                     "PEPMASS" | "PRECURSOR_MZ" => {
                         if let Some(first) = val.split_whitespace().next()
-                            && let Ok(mz) = first.parse::<f32>()
+                            && let Ok(mz) = first.parse::<f64>()
                         {
                             precursor_mz = Some(mz);
                         }
@@ -61,7 +61,7 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> Vec<ParsedSpectrum> {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2
                     && let (Ok(mz), Ok(intensity)) =
-                        (parts[0].parse::<f32>(), parts[1].parse::<f32>())
+                        (parts[0].parse::<f64>(), parts[1].parse::<f64>())
                 {
                     peaks.push((mz, intensity));
                 }

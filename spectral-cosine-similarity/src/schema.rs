@@ -41,7 +41,7 @@ diesel::table! {
         raw_name -> Text,
         source_file -> Text,
         spectrum_hash -> Text,
-        precursor_mz -> Float,
+        precursor_mz -> Double,
         num_peaks -> Integer,
         peaks -> Text,
     }
@@ -54,9 +54,9 @@ diesel::table! {
         right_id -> Integer,
         experiment_id -> Integer,
         implementation_id -> Integer,
-        score -> Float,
+        score -> Double,
         matches -> Integer,
-        median_time_us -> Float,
+        median_time_us -> Double,
     }
 }
 

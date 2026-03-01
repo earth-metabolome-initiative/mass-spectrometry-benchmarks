@@ -85,7 +85,7 @@ fn build_similarity_or_panic<T>(
 struct ComputeContext {
     experiments: Vec<Experiment>,
     spectrum_ids: Vec<i32>,
-    spectra_map: HashMap<i32, GenericSpectrum<f32, f32>>,
+    spectra_map: HashMap<i32, GenericSpectrum<f64, f64>>,
     id_pairs: Vec<(i32, i32)>,
 }
 
@@ -326,7 +326,7 @@ fn load_compute_context(conn: &mut SqliteConnection, max_spectra: Option<usize>)
     let all_spectra: Vec<SpectrumRow> = spectra_query.load(conn).expect("failed to load spectra");
 
     let spectrum_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
-    let spectra_map: HashMap<i32, GenericSpectrum<f32, f32>> = all_spectra
+    let spectra_map: HashMap<i32, GenericSpectrum<f64, f64>> = all_spectra
         .iter()
         .map(|s| (s.id, s.to_generic_spectrum()))
         .collect();
@@ -410,9 +410,9 @@ where
     F: Fn(Option<usize>),
     B: Fn(&ExperimentParams) -> S,
     S: ScalarSimilarity<
-            GenericSpectrum<f32, f32>,
-            GenericSpectrum<f32, f32>,
-            Similarity = StdResult<(f32, usize), SimilarityComputationError>,
+            GenericSpectrum<f64, f64>,
+            GenericSpectrum<f64, f64>,
+            Similarity = StdResult<(f64, usize), SimilarityComputationError>,
         >,
 {
     let impl_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
@@ -488,7 +488,7 @@ where
 
         // Timed runs
         let mut times_ns: Vec<u128> = Vec::with_capacity(params.n_reps as usize);
-        let mut last_result = (0.0f32, 0usize);
+        let mut last_result = (0.0f64, 0usize);
         for _ in 0..params.n_reps {
             let t0 = Instant::now();
             last_result = black_box(similarity.similarity(black_box(left), black_box(right)))
@@ -510,7 +510,7 @@ where
         });
         times_ns.sort_unstable();
         let median_ns = times_ns[params.n_reps as usize / 2];
-        let median_us = median_ns as f32 / 1000.0;
+        let median_us = median_ns as f64 / 1000.0;
 
         batch.push(NewResult {
             left_id,
@@ -844,7 +844,7 @@ fn timing_stats(
     implementation_id: i32,
     label: &str,
 ) -> Option<AlgoStats> {
-    let rows: Vec<f32> = crate::schema::results::table
+    let rows: Vec<f64> = crate::schema::results::table
         .filter(crate::schema::results::implementation_id.eq(implementation_id))
         .select(crate::schema::results::median_time_us)
         .load(conn)
@@ -855,14 +855,14 @@ fn timing_stats(
     }
 
     let count = rows.len() as i64;
-    let sum: f64 = rows.iter().map(|&t| t as f64).sum();
+    let sum: f64 = rows.iter().sum();
     let mean = sum / count as f64;
 
     let mut sorted = rows.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = sorted[sorted.len() / 2] as f64;
-    let min = sorted[0] as f64;
-    let max = sorted[sorted.len() - 1] as f64;
+    let median = sorted[sorted.len() / 2];
+    let min = sorted[0];
+    let max = sorted[sorted.len() - 1];
 
     Some(AlgoStats {
         name: label.to_string(),
