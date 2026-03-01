@@ -62,9 +62,9 @@ pub fn initialize(conn: &mut SqliteConnection) {
         if !trimmed.is_empty() {
             if let Err(e) = sql_query(trimmed).execute(conn) {
                 let err_msg = e.to_string();
-                let is_legacy_reference_index_statement =
-                    trimmed.contains("idx_implementations_one_reference_per_algorithm")
-                        && err_msg.contains("no such column: is_reference");
+                let is_legacy_reference_index_statement = trimmed
+                    .contains("idx_implementations_one_reference_per_algorithm")
+                    && err_msg.contains("no such column: is_reference");
 
                 if !is_legacy_reference_index_statement {
                     panic!("Failed to execute schema statement: {e}\n{trimmed}");
@@ -88,6 +88,11 @@ pub fn initialize(conn: &mut SqliteConnection) {
         "ModifiedCosine",
         Some("Exact precursor-shift-aware modified cosine similarity"),
     );
+    let modified_greedy_cosine_id = ensure_algorithm(
+        conn,
+        "ModifiedGreedyCosine",
+        Some("Greedy precursor-shift-aware modified cosine similarity"),
+    );
     let modified_cosine_approx_id = ensure_algorithm(
         conn,
         "ModifiedCosineApprox",
@@ -106,6 +111,7 @@ pub fn initialize(conn: &mut SqliteConnection) {
     set_algorithm_approximation(conn, cosine_hungarian_id, None);
     set_algorithm_approximation(conn, cosine_greedy_id, Some(cosine_hungarian_id));
     set_algorithm_approximation(conn, modified_cosine_id, None);
+    set_algorithm_approximation(conn, modified_greedy_cosine_id, Some(modified_cosine_id));
     set_algorithm_approximation(conn, modified_cosine_approx_id, Some(modified_cosine_id));
     set_algorithm_approximation(conn, entropy_weighted_id, None);
     set_algorithm_approximation(conn, entropy_unweighted_id, None);
@@ -125,9 +131,12 @@ pub fn initialize(conn: &mut SqliteConnection) {
     // Seed implementations (same algorithm can have multiple implementations)
     ensure_implementation(conn, cosine_hungarian_id, rust_lib_id, false);
     ensure_implementation(conn, cosine_hungarian_id, matchms_lib_id, true);
+    ensure_implementation(conn, cosine_greedy_id, rust_lib_id, false);
     ensure_implementation(conn, cosine_greedy_id, matchms_lib_id, true);
     ensure_implementation(conn, modified_cosine_id, rust_lib_id, true);
-    ensure_implementation(conn, modified_cosine_approx_id, matchms_lib_id, true);
+    ensure_implementation(conn, modified_greedy_cosine_id, rust_lib_id, false);
+    ensure_implementation(conn, modified_greedy_cosine_id, matchms_lib_id, false);
+    ensure_implementation(conn, modified_cosine_approx_id, matchms_lib_id, false);
     ensure_implementation(conn, entropy_weighted_id, rust_lib_id, false);
     ensure_implementation(conn, entropy_weighted_id, ms_entropy_lib_id, true);
     ensure_implementation(conn, entropy_unweighted_id, rust_lib_id, false);
@@ -629,8 +638,8 @@ source = "git+https://example.com/repo#abc123def"
             .first::<i64>(&mut conn)
             .expect("failed to count experiments");
 
-        assert_eq!(algorithm_count, 6);
-        assert_eq!(implementation_count, 9);
+        assert_eq!(algorithm_count, 7);
+        assert_eq!(implementation_count, 12);
         assert_eq!(experiment_count, PARAM_SETS.len() as i64);
     }
 
@@ -642,11 +651,19 @@ source = "git+https://example.com/repo#abc123def"
         let rust_hungarian =
             get_implementation_id(&mut conn, "CosineHungarian", "mass-spectrometry-traits");
         let matchms_hungarian = get_implementation_id(&mut conn, "CosineHungarian", "matchms");
+        let rust_greedy =
+            get_implementation_id(&mut conn, "CosineGreedy", "mass-spectrometry-traits");
         let matchms_greedy = get_implementation_id(&mut conn, "CosineGreedy", "matchms");
         let rust_modified =
             get_implementation_id(&mut conn, "ModifiedCosine", "mass-spectrometry-traits");
-        let matchms_modified =
-            get_implementation_id(&mut conn, "ModifiedCosineApprox", "matchms");
+        let rust_modified_greedy = get_implementation_id(
+            &mut conn,
+            "ModifiedGreedyCosine",
+            "mass-spectrometry-traits",
+        );
+        let matchms_modified_greedy =
+            get_implementation_id(&mut conn, "ModifiedGreedyCosine", "matchms");
+        let matchms_modified = get_implementation_id(&mut conn, "ModifiedCosineApprox", "matchms");
         let rust_entropy_weighted = get_implementation_id(
             &mut conn,
             "EntropySimilarityWeighted",
@@ -663,9 +680,15 @@ source = "git+https://example.com/repo#abc123def"
             get_implementation_id(&mut conn, "EntropySimilarityUnweighted", "ms_entropy");
 
         assert_ne!(rust_hungarian, matchms_hungarian);
+        assert_ne!(rust_greedy, matchms_greedy);
+        assert_ne!(rust_hungarian, rust_greedy);
         assert_ne!(matchms_hungarian, matchms_greedy);
         assert_ne!(rust_hungarian, matchms_greedy);
+        assert_ne!(matchms_hungarian, rust_greedy);
         assert_ne!(rust_modified, matchms_modified);
+        assert_ne!(rust_modified_greedy, matchms_modified_greedy);
+        assert_ne!(rust_modified, rust_modified_greedy);
+        assert_ne!(matchms_modified, matchms_modified_greedy);
         assert_ne!(rust_hungarian, rust_modified);
         assert_ne!(matchms_hungarian, matchms_modified);
         assert_ne!(matchms_greedy, matchms_modified);
@@ -688,7 +711,7 @@ source = "git+https://example.com/repo#abc123def"
     }
 
     #[test]
-    fn seeds_exactly_one_reference_per_algorithm() {
+    fn seeds_reference_counts_are_valid() {
         let mut conn = setup_in_memory_connection();
         initialize(&mut conn);
 
@@ -706,10 +729,51 @@ source = "git+https://example.com/repo#abc123def"
             }
         }
 
-        assert_eq!(refs_by_algorithm.len(), 6);
+        assert_eq!(refs_by_algorithm.len(), 7);
         assert!(
-            refs_by_algorithm.values().all(|&n| n == 1),
-            "expected exactly one reference implementation per algorithm, got {refs_by_algorithm:?}"
+            refs_by_algorithm.values().all(|&n| n <= 1),
+            "expected at most one reference implementation per algorithm, got {refs_by_algorithm:?}"
+        );
+
+        let canonical_algorithm_ids: Vec<i32> = algorithms::table
+            .filter(algorithms::approximates_algorithm_id.is_null())
+            .order(algorithms::id.asc())
+            .select(algorithms::id)
+            .load(&mut conn)
+            .expect("failed to load canonical algorithms");
+
+        for algorithm_id in canonical_algorithm_ids {
+            let count = refs_by_algorithm.get(&algorithm_id).copied().unwrap_or(0);
+            assert_eq!(
+                count, 1,
+                "canonical algorithm id {algorithm_id} must have exactly one reference implementation"
+            );
+        }
+
+        let modified_cosine_approx_id = algorithms::table
+            .filter(algorithms::name.eq("ModifiedCosineApprox"))
+            .select(algorithms::id)
+            .first::<i32>(&mut conn)
+            .expect("failed to load ModifiedCosineApprox id");
+        assert_eq!(
+            refs_by_algorithm
+                .get(&modified_cosine_approx_id)
+                .copied()
+                .unwrap_or(0),
+            0
+        );
+
+        let modified_greedy_cosine_id = algorithms::table
+            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
+            .select(algorithms::id)
+            .first::<i32>(&mut conn)
+            .expect("failed to load ModifiedGreedyCosine id");
+        assert_eq!(
+            refs_by_algorithm
+                .get(&modified_greedy_cosine_id)
+                .copied()
+                .unwrap_or(0),
+            0
         );
     }
 
@@ -778,7 +842,47 @@ source = "git+https://example.com/repo#abc123def"
             .select(implementations::is_reference)
             .first::<bool>(&mut conn)
             .expect("failed to load ModifiedCosineApprox matchms reference flag");
-        assert!(matchms_modified_ref);
+        assert!(!matchms_modified_ref);
+    }
+
+    #[test]
+    fn seeds_modified_greedy_cosine_as_approximation_of_modified_cosine() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let modified_cosine_id = algorithms::table
+            .filter(algorithms::name.eq("ModifiedCosine"))
+            .select(algorithms::id)
+            .first::<i32>(&mut conn)
+            .expect("failed to load ModifiedCosine id");
+
+        let modified_greedy_approx = algorithms::table
+            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
+            .select(algorithms::approximates_algorithm_id)
+            .first::<Option<i32>>(&mut conn)
+            .expect("failed to load ModifiedGreedyCosine approximation target");
+
+        assert_eq!(modified_greedy_approx, Some(modified_cosine_id));
+
+        let rust_modified_greedy_ref = implementations::table
+            .inner_join(algorithms::table)
+            .inner_join(libraries::table)
+            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
+            .filter(libraries::name.eq("mass-spectrometry-traits"))
+            .select(implementations::is_reference)
+            .first::<bool>(&mut conn)
+            .expect("failed to load ModifiedGreedyCosine rust reference flag");
+        assert!(!rust_modified_greedy_ref);
+
+        let matchms_modified_greedy_ref = implementations::table
+            .inner_join(algorithms::table)
+            .inner_join(libraries::table)
+            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
+            .filter(libraries::name.eq("matchms"))
+            .select(implementations::is_reference)
+            .first::<bool>(&mut conn)
+            .expect("failed to load ModifiedGreedyCosine matchms reference flag");
+        assert!(!matchms_modified_greedy_ref);
     }
 
     #[test]

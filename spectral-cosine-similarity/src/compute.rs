@@ -20,12 +20,18 @@ const FLUSH_BATCH: usize = 500;
 const CHART_UPDATE_INTERVAL: usize = 50_000;
 const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
-const RUST_ALGORITHMS: [&str; 4] = [
+const RUST_ALGORITHMS: [&str; 6] = [
     "CosineHungarian",
+    "CosineGreedy",
     "ModifiedCosine",
+    "ModifiedGreedyCosine",
     "EntropySimilarityWeighted",
     "EntropySimilarityUnweighted",
 ];
+
+fn algorithm_cli_label(algorithm_name: &str, library_name: &str) -> String {
+    format!("{algorithm_name} ({library_name})")
+}
 
 fn build_similarity_or_panic<T>(
     algorithm_name: &str,
@@ -42,6 +48,7 @@ fn build_similarity_or_panic<T>(
 
 struct ComputeContext {
     experiments: Vec<Experiment>,
+    spectrum_ids: Vec<i32>,
     spectra_map: HashMap<i32, GenericSpectrum<f32, f32>>,
     id_pairs: Vec<(i32, i32)>,
 }
@@ -117,14 +124,18 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
 fn run_matchms_default(max_spectra: Option<usize>) {
     let db = db::db_path(max_spectra);
     let batch_size = CHART_UPDATE_INTERVAL.to_string();
-    let status = std::process::Command::new("uv")
-        .args([
-            "run",
-            "python3",
-            "scripts/python_reference_compute.py",
-            db,
-            &batch_size,
-        ])
+    let mut cmd = std::process::Command::new("uv");
+    cmd.args([
+        "run",
+        "python3",
+        "scripts/python_reference_compute.py",
+        db,
+        &batch_size,
+    ]);
+    if let Some(max_spectra) = max_spectra {
+        cmd.arg(max_spectra.to_string());
+    }
+    let status = cmd
         .status()
         .expect("failed to run python_reference_compute.py");
 
@@ -137,38 +148,58 @@ and ensure both `matchms` and `ms_entropy` import successfully."
     }
 }
 
-fn count_results_for_implementation(conn: &mut SqliteConnection, implementation_id: i32) -> i64 {
-    crate::schema::results::table
+fn count_results_for_implementation(
+    conn: &mut SqliteConnection,
+    implementation_id: i32,
+    spectrum_ids_filter: Option<&[i32]>,
+) -> i64 {
+    if let Some(ids) = spectrum_ids_filter
+        && ids.is_empty()
+    {
+        return 0;
+    }
+
+    let mut query = crate::schema::results::table
         .filter(crate::schema::results::implementation_id.eq(implementation_id))
+        .into_boxed();
+
+    if let Some(ids) = spectrum_ids_filter {
+        query = query
+            .filter(crate::schema::results::left_id.eq_any(ids))
+            .filter(crate::schema::results::right_id.eq_any(ids));
+    }
+
+    query
         .select(diesel::dsl::count_star())
         .first::<i64>(conn)
         .expect("failed to count implementation results")
 }
 
-fn reference_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
+fn python_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
     crate::schema::implementations::table
         .inner_join(crate::schema::libraries::table)
-        .filter(crate::schema::implementations::is_reference.eq(true))
-        .filter(crate::schema::libraries::name.ne(RUST_LIBRARY_NAME))
+        .filter(crate::schema::libraries::language.eq("python"))
         .order(crate::schema::implementations::id.asc())
         .select(crate::schema::implementations::id)
         .load(conn)
-        .expect("failed to load reference implementations")
+        .expect("failed to load python implementations")
 }
 
-fn count_reference_results(conn: &mut SqliteConnection) -> i64 {
-    reference_implementation_ids(conn)
+fn count_python_results(conn: &mut SqliteConnection, spectrum_ids_filter: Option<&[i32]>) -> i64 {
+    python_implementation_ids(conn)
         .into_iter()
-        .map(|implementation_id| count_results_for_implementation(conn, implementation_id))
+        .map(|implementation_id| {
+            count_results_for_implementation(conn, implementation_id, spectrum_ids_filter)
+        })
         .sum()
 }
 
 /// Estimate remaining compute workload units.
 ///
 /// One unit is one `(left_id, right_id, experiment_id, implementation_id)` result row
-/// that still needs to be produced by either Rust or Python/reference implementations.
-pub fn estimate_remaining_work(conn: &mut SqliteConnection) -> u64 {
-    let context = load_compute_context(conn);
+/// that still needs to be produced by either Rust or Python implementations.
+pub fn estimate_remaining_work(conn: &mut SqliteConnection, max_spectra: Option<usize>) -> u64 {
+    let context = load_compute_context(conn, max_spectra);
     let expected_per_implementation = context
         .id_pairs
         .len()
@@ -176,42 +207,51 @@ pub fn estimate_remaining_work(conn: &mut SqliteConnection) -> u64 {
     if expected_per_implementation == 0 {
         return 0;
     }
+    let spectrum_ids_filter = max_spectra.map(|_| context.spectrum_ids.as_slice());
 
     let mut rust_remaining: u64 = 0;
     for algorithm_name in RUST_ALGORITHMS {
         let implementation_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
-        let existing = count_results_for_implementation(conn, implementation_id);
+        let existing =
+            count_results_for_implementation(conn, implementation_id, spectrum_ids_filter);
         rust_remaining += expected_per_implementation.saturating_sub(existing) as u64;
     }
 
-    let reference_remaining: u64 = reference_implementation_ids(conn)
+    let python_remaining: u64 = python_implementation_ids(conn)
         .into_iter()
         .map(|implementation_id| {
-            let existing = count_results_for_implementation(conn, implementation_id);
+            let existing =
+                count_results_for_implementation(conn, implementation_id, spectrum_ids_filter);
             expected_per_implementation.saturating_sub(existing) as u64
         })
         .sum();
 
-    rust_remaining + reference_remaining
+    rust_remaining + python_remaining
 }
 
-fn load_compute_context(conn: &mut SqliteConnection) -> ComputeContext {
+fn load_compute_context(conn: &mut SqliteConnection, max_spectra: Option<usize>) -> ComputeContext {
     let experiments = db::load_experiments(conn);
 
-    let all_spectra: Vec<SpectrumRow> = crate::schema::spectra::table
+    let mut spectra_query = crate::schema::spectra::table
         .order(crate::schema::spectra::id.asc())
-        .load(conn)
-        .expect("failed to load spectra");
+        .into_boxed();
+    if let Some(max_spectra) = max_spectra {
+        let limit = i64::try_from(max_spectra).unwrap_or(i64::MAX);
+        spectra_query = spectra_query.limit(limit);
+    }
+    let all_spectra: Vec<SpectrumRow> = spectra_query.load(conn).expect("failed to load spectra");
+
+    let spectrum_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
     let spectra_map: HashMap<i32, GenericSpectrum<f32, f32>> = all_spectra
         .iter()
         .map(|s| (s.id, s.to_generic_spectrum()))
         .collect();
 
-    let spectra_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
-    let id_pairs = generate_pairs(&spectra_ids);
+    let id_pairs = generate_pairs(&spectrum_ids);
 
     ComputeContext {
         experiments,
+        spectrum_ids,
         spectra_map,
         id_pairs,
     }
@@ -236,10 +276,19 @@ where
         >,
 {
     let impl_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
+    let spectrum_ids_filter = max_spectra.map(|_| context.spectrum_ids.as_slice());
+    let algorithm_label = algorithm_cli_label(algorithm_name, RUST_LIBRARY_NAME);
 
     // Load existing results to skip completed work
-    let existing: HashSet<(i32, i32, i32)> = crate::schema::results::table
+    let mut existing_query = crate::schema::results::table
         .filter(crate::schema::results::implementation_id.eq(impl_id))
+        .into_boxed();
+    if let Some(ids) = spectrum_ids_filter {
+        existing_query = existing_query
+            .filter(crate::schema::results::left_id.eq_any(ids))
+            .filter(crate::schema::results::right_id.eq_any(ids));
+    }
+    let existing: HashSet<(i32, i32, i32)> = existing_query
         .order((
             crate::schema::results::left_id.asc(),
             crate::schema::results::right_id.asc(),
@@ -268,14 +317,14 @@ where
     if work.is_empty() {
         set_substep(
             progress,
-            &format!("[compute] {algorithm_name} (Rust): nothing to compute"),
+            &format!("[compute] {algorithm_label}: nothing to compute"),
         );
         return 0;
     }
 
     set_substep(
         progress,
-        &format!("[compute] {algorithm_name} (Rust): 0/{}", work.len()),
+        &format!("[compute] {algorithm_label}: 0/{}", work.len()),
     );
     let work_len = work.len();
 
@@ -283,7 +332,7 @@ where
         let pb = ProgressBar::new(work.len() as u64);
         pb.set_style(
             ProgressStyle::with_template(&format!(
-                "[compute] {algorithm_name} (Rust) {{bar:40}} {{pos}}/{{len}} [{{eta}}]"
+                "[compute] {algorithm_label} {{bar:40}} {{pos}}/{{len}} [{{eta}}]"
             ))
             .expect("invalid compute progress style"),
         );
@@ -313,7 +362,7 @@ where
             let _ = black_box(similarity.similarity(black_box(left), black_box(right)))
                 .unwrap_or_else(|err| {
                     panic!(
-                        "[compute] {algorithm_name} warmup failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
+                        "[compute] {algorithm_label} warmup failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
                         exp.id
                     )
                 });
@@ -327,7 +376,7 @@ where
             last_result = black_box(similarity.similarity(black_box(left), black_box(right)))
                 .unwrap_or_else(|err| {
                     panic!(
-                        "[compute] {algorithm_name} run failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
+                        "[compute] {algorithm_label} run failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
                         exp.id
                     )
                 });
@@ -337,7 +386,7 @@ where
         let (score, matches) = last_result;
         let matches = i32::try_from(matches).unwrap_or_else(|_| {
             panic!(
-                "[compute] {algorithm_name} produced matches={} that does not fit i32 for left_id={left_id}, right_id={right_id}, experiment_id={}",
+                "[compute] {algorithm_label} produced matches={} that does not fit i32 for left_id={left_id}, right_id={right_id}, experiment_id={}",
                 matches, exp.id
             )
         });
@@ -363,8 +412,8 @@ where
 
             if total_done >= next_chart_update {
                 next_chart_update = total_done + CHART_UPDATE_INTERVAL;
-                set_substep(progress, "[compute] Running Python references");
-                let before_reference = count_reference_results(conn);
+                set_substep(progress, "[compute] Running Python implementations");
+                let before_python = count_python_results(conn, spectrum_ids_filter);
                 if let Some(pb) = pb.as_ref() {
                     pb.suspend(|| {
                         run_matchms(max_spectra);
@@ -372,17 +421,18 @@ where
                 } else {
                     run_matchms(max_spectra);
                 }
-                let after_reference = count_reference_results(conn);
-                let added_reference_rows = after_reference.saturating_sub(before_reference);
-                inc_progress(progress, added_reference_rows as u64);
+                let after_python = count_python_results(conn, spectrum_ids_filter);
+                let added_python_rows = after_python.saturating_sub(before_python);
+                inc_progress(progress, added_python_rows as u64);
 
                 set_substep(progress, "[compute] Refreshing report charts");
+                let report_config = report::ReportConfig::default();
                 if progress.is_some() {
                     let report_progress =
                         progress.as_deref_mut().map(|p| p as &mut dyn StageProgress);
-                    report::run_with_progress(conn, report_progress);
+                    report::generate(conn, &report_config, report_progress);
                 } else {
-                    report::run(conn);
+                    report::generate(conn, &report_config, None);
                 }
             }
         }
@@ -392,7 +442,7 @@ where
         } else if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL) {
             set_substep(
                 progress,
-                &format!("[compute] {algorithm_name} (Rust): {total_done}/{work_len}",),
+                &format!("[compute] {algorithm_label}: {total_done}/{work_len}",),
             );
         }
     }
@@ -404,7 +454,7 @@ where
 
     set_substep(
         progress,
-        &format!("[compute] {algorithm_name} (Rust): {total_done} pairs computed"),
+        &format!("[compute] {algorithm_label}: {total_done} pairs computed"),
     );
 
     total_done
@@ -418,7 +468,8 @@ fn compute_all<F>(
 ) where
     F: Fn(Option<usize>),
 {
-    let context = load_compute_context(conn);
+    let context = load_compute_context(conn, max_spectra);
+    let spectrum_ids_filter = max_spectra.map(|_| context.spectrum_ids.as_slice());
 
     set_substep(progress, "[compute] Starting Rust algorithms");
 
@@ -438,6 +489,19 @@ fn compute_all<F>(
     compute_rust_algorithm(
         conn,
         &context,
+        "CosineGreedy",
+        max_spectra,
+        run_matchms,
+        progress,
+        |params| {
+            build_similarity_or_panic("CosineGreedy", params, || {
+                GreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+            })
+        },
+    );
+    compute_rust_algorithm(
+        conn,
+        &context,
         "ModifiedCosine",
         max_spectra,
         run_matchms,
@@ -449,6 +513,19 @@ fn compute_all<F>(
                     params.intensity_power,
                     params.tolerance,
                 )
+            })
+        },
+    );
+    compute_rust_algorithm(
+        conn,
+        &context,
+        "ModifiedGreedyCosine",
+        max_spectra,
+        run_matchms,
+        progress,
+        |params| {
+            build_similarity_or_panic("ModifiedGreedyCosine", params, || {
+                ModifiedGreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
             })
         },
     );
@@ -480,15 +557,43 @@ fn compute_all<F>(
     );
 
     // Final matchms run to catch any remaining work
-    set_substep(progress, "[compute] Final Python reference pass");
-    let before_reference = count_reference_results(conn);
+    set_substep(progress, "[compute] Final Python implementation pass");
+    let before_python = count_python_results(conn, spectrum_ids_filter);
     run_matchms(max_spectra);
-    let after_reference = count_reference_results(conn);
-    let added_reference_rows = after_reference.saturating_sub(before_reference);
-    inc_progress(progress, added_reference_rows as u64);
+    let after_python = count_python_results(conn, spectrum_ids_filter);
+    let added_python_rows = after_python.saturating_sub(before_python);
+    inc_progress(progress, added_python_rows as u64);
 }
 
 fn print_timing_report(conn: &mut SqliteConnection) {
+    let algorithm_rows: Vec<(i32, String, Option<i32>)> = crate::schema::algorithms::table
+        .order(crate::schema::algorithms::id.asc())
+        .select((
+            crate::schema::algorithms::id,
+            crate::schema::algorithms::name,
+            crate::schema::algorithms::approximates_algorithm_id,
+        ))
+        .load(conn)
+        .expect("failed to load algorithms for timing report");
+
+    let algorithm_name_by_id: HashMap<i32, String> = algorithm_rows
+        .iter()
+        .map(|(algorithm_id, algorithm_name, _)| (*algorithm_id, algorithm_name.clone()))
+        .collect();
+    let canonical_algorithm_by_name: HashMap<String, String> = algorithm_rows
+        .into_iter()
+        .map(
+            |(algorithm_id, algorithm_name, approximates_algorithm_id)| {
+                let canonical_algorithm_id = approximates_algorithm_id.unwrap_or(algorithm_id);
+                let canonical_algorithm_name = algorithm_name_by_id
+                    .get(&canonical_algorithm_id)
+                    .cloned()
+                    .unwrap_or_else(|| algorithm_name.clone());
+                (algorithm_name, canonical_algorithm_name)
+            },
+        )
+        .collect();
+
     let implementation_rows: Vec<(String, String, i32, bool)> =
         crate::schema::implementations::table
             .inner_join(crate::schema::algorithms::table)
@@ -520,12 +625,29 @@ fn print_timing_report(conn: &mut SqliteConnection) {
 
     eprintln!("\n=== Timing Report ===\n");
 
-    for (algorithm, libraries) in by_algorithm {
+    let mut algorithm_names: Vec<String> = by_algorithm.keys().cloned().collect();
+    algorithm_names.sort();
+
+    for algorithm in algorithm_names {
+        let libraries = by_algorithm
+            .get(&algorithm)
+            .expect("algorithm key must exist in grouped timing report");
         let rust_impl = libraries
             .iter()
             .find(|(library, _, _)| library == RUST_LIBRARY_NAME)
             .map(|(_, implementation_id, _)| *implementation_id);
-        let reference_impl = libraries.iter().find(|(_, _, is_reference)| *is_reference);
+        let canonical_algorithm = canonical_algorithm_by_name
+            .get(&algorithm)
+            .map(String::as_str)
+            .unwrap_or(algorithm.as_str());
+        let reference_impl =
+            by_algorithm
+                .get(canonical_algorithm)
+                .and_then(|canonical_libraries| {
+                    canonical_libraries
+                        .iter()
+                        .find(|(_, _, is_reference)| *is_reference)
+                });
 
         let rust_stats = rust_impl.and_then(|implementation_id| {
             timing_stats(
@@ -539,7 +661,7 @@ fn print_timing_report(conn: &mut SqliteConnection) {
                 timing_stats(
                     conn,
                     *implementation_id,
-                    &format!("{algorithm} ({reference_library})"),
+                    &format!("{canonical_algorithm} ({reference_library})"),
                 )
             });
 
@@ -556,17 +678,25 @@ fn print_timing_report(conn: &mut SqliteConnection) {
         {
             let speedup = reference.mean / rust.mean;
             if let Some((reference_library, _, _)) = reference_impl {
-                eprintln!("Speedup ({algorithm}, Rust vs {reference_library}): {speedup:.1}x");
+                if canonical_algorithm == algorithm {
+                    eprintln!("Speedup ({algorithm}, Rust vs {reference_library}): {speedup:.1}x");
+                } else {
+                    eprintln!(
+                        "Speedup ({algorithm} vs {canonical_algorithm} reference, Rust vs {reference_library}): {speedup:.1}x"
+                    );
+                }
             }
         }
 
-        for (library, implementation_id, is_reference) in libraries {
-            if library == RUST_LIBRARY_NAME || is_reference {
+        for (library, implementation_id, is_reference) in libraries.iter() {
+            if library == RUST_LIBRARY_NAME || *is_reference {
                 continue;
             }
-            if let Some(stats) =
-                timing_stats(conn, implementation_id, &format!("{algorithm} ({library})"))
-            {
+            if let Some(stats) = timing_stats(
+                conn,
+                *implementation_id,
+                &format!("{algorithm} ({library})"),
+            ) {
                 print_algo_stats(&stats);
             }
         }
@@ -622,4 +752,28 @@ fn print_algo_stats(s: &AlgoStats) {
         "{}: {} pairs, mean={:.1}us, median={:.1}us, min={:.1}us, max={:.1}us",
         s.name, s.count, s.mean, s.median, s.min, s.max
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use diesel::Connection;
+    use diesel::sqlite::SqliteConnection;
+
+    #[test]
+    fn python_implementations_include_non_reference_modified_algorithms() {
+        let mut conn =
+            SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite db");
+        db::initialize(&mut conn);
+
+        let python_impls = python_implementation_ids(&mut conn);
+        let matchms_modified =
+            db::get_implementation_id(&mut conn, "ModifiedCosineApprox", "matchms");
+        let matchms_modified_greedy =
+            db::get_implementation_id(&mut conn, "ModifiedGreedyCosine", "matchms");
+        assert!(python_impls.contains(&matchms_modified));
+        assert!(python_impls.contains(&matchms_modified_greedy));
+        assert_eq!(python_impls.len(), 6);
+    }
 }

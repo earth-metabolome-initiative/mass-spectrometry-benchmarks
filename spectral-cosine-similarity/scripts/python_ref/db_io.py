@@ -51,10 +51,16 @@ def load_experiments(cur: sqlite3.Cursor) -> list[ExperimentData]:
     return [ExperimentData(id=int(row[0]), params=json.loads(row[1])) for row in cur.fetchall()]
 
 
-def load_spectra(cur: sqlite3.Cursor) -> dict[int, SpectrumData]:
-    cur.execute(
-        "SELECT id, peaks, precursor_mz, num_peaks FROM spectra ORDER BY id ASC"
-    )
+def load_spectra(
+    cur: sqlite3.Cursor, max_spectra: int | None = None
+) -> dict[int, SpectrumData]:
+    if max_spectra is None:
+        cur.execute("SELECT id, peaks, precursor_mz, num_peaks FROM spectra ORDER BY id ASC")
+    else:
+        cur.execute(
+            "SELECT id, peaks, precursor_mz, num_peaks FROM spectra ORDER BY id ASC LIMIT ?",
+            (int(max_spectra),),
+        )
     spectra: dict[int, SpectrumData] = {}
     for row in cur.fetchall():
         spec_id, peaks_json, precursor_mz, _num_peaks = row

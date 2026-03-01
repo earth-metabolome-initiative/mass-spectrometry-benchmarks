@@ -17,6 +17,7 @@ COMMIT_INTERVAL = 500
 def run_algorithm(
     conn: sqlite3.Connection,
     algorithm_name: str,
+    library_name: str,
     implementation_id: int,
     experiments: list[ExperimentData],
     spectra: dict[int, SpectrumData],
@@ -32,7 +33,8 @@ def run_algorithm(
         return 0
 
     uncommitted = 0
-    for item in tqdm(work, desc=f"[{algorithm_name}]", unit="pair", leave=False):
+    algo_label = f"{algorithm_name} ({library_name})"
+    for item in tqdm(work, desc=f"[{algo_label}]", unit="pair", leave=False):
         left_spec = spectra[item.left_id]
         right_spec = spectra[item.right_id]
         params = item.experiment.params

@@ -40,11 +40,15 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
     });
 
     let output_dir = TempDir::new().expect("failed to create temporary output directory");
-    report::run_to_dir(&mut test_db.conn, output_dir.path());
+    let report_config = report::ReportConfig {
+        output_dir: output_dir.path().to_path_buf(),
+        ..report::ReportConfig::default()
+    };
+    report::generate(&mut test_db.conn, &report_config, None);
 
-    assert!(output_dir.path().join("timing_by_peaks.svg").exists());
-    assert!(output_dir.path().join("mse_score_by_peaks.svg").exists());
-    assert!(output_dir.path().join("tables_by_peaks.md").exists());
+    assert!(output_dir.path().join("timing.svg").exists());
+    assert!(output_dir.path().join("mse.svg").exists());
+    assert!(output_dir.path().join("tables.md").exists());
 
     let spectra_count = spectra::table
         .select(count_star())
@@ -65,7 +69,7 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
 
     assert_eq!(spectra_count, 3);
     assert_eq!(experiments_count, 4);
-    assert_eq!(implementations_count, 9);
+    assert_eq!(implementations_count, 12);
     let n_pairs = spectra_count * (spectra_count + 1) / 2;
     let expected_results = n_pairs * experiments_count * implementations_count;
     assert_eq!(results_count, expected_results);

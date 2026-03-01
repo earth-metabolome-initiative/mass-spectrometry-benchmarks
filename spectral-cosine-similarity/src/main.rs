@@ -40,7 +40,7 @@ fn main() {
         prepare::run_with_progress(conn, cli.max_spectra, Some(&mut stage));
     }
 
-    let compute_units = compute::estimate_remaining_work(conn);
+    let compute_units = compute::estimate_remaining_work(conn, cli.max_spectra);
     progress.add_total_units(compute_units);
 
     {
@@ -50,7 +50,7 @@ fn main() {
 
     {
         let mut stage = progress.start_stage("Report", FIXED_STAGE_UNITS);
-        report::run_with_progress(conn, Some(&mut stage));
+        report::generate(conn, &report::ReportConfig::default(), Some(&mut stage));
     }
 
     progress.finish_all();
