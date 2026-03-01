@@ -116,3 +116,88 @@ pub fn sanitize_name(raw_name: &str) -> String {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_mgf, sanitize_name};
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn sanitize_name_normalizes_and_prefixes_numeric_names() {
+        assert_eq!(sanitize_name("\"Foo Bar [M+H]+\""), "foo_bar_m_h");
+        assert_eq!(sanitize_name("__Weird__Name__"), "weird_name");
+        assert_eq!(sanitize_name("123abc"), "n123abc");
+        assert_eq!(sanitize_name(""), "");
+    }
+
+    #[test]
+    fn parse_mgf_filters_and_sorts_peaks() {
+        let mut file = NamedTempFile::new().expect("failed to create temporary mgf file");
+        writeln!(
+            file,
+            "\
+BEGIN IONS
+NAME=First
+PEPMASS=123.4 99
+200 5
+150 10
+170 7
+180 8
+190 9
+END IONS
+BEGIN IONS
+NAME=MissingPrecursor
+100 1
+101 2
+102 3
+103 4
+104 5
+END IONS
+BEGIN IONS
+NAME=FewPeaks
+PEPMASS=321.0
+100 1
+101 2
+END IONS
+BEGIN IONS
+NAME=Second
+PRECURSOR_MZ=456.7
+130 4
+110 2
+120 3
+140 5
+150 6
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let parsed = parse_mgf(file.path(), 5);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].raw_name, "First");
+        assert_eq!(parsed[0].precursor_mz, 123.4);
+        assert_eq!(
+            parsed[0].peaks,
+            vec![
+                (150.0, 10.0),
+                (170.0, 7.0),
+                (180.0, 8.0),
+                (190.0, 9.0),
+                (200.0, 5.0)
+            ]
+        );
+
+        assert_eq!(parsed[1].raw_name, "Second");
+        assert_eq!(parsed[1].precursor_mz, 456.7);
+        assert_eq!(
+            parsed[1].peaks,
+            vec![
+                (110.0, 2.0),
+                (120.0, 3.0),
+                (130.0, 4.0),
+                (140.0, 5.0),
+                (150.0, 6.0)
+            ]
+        );
+    }
+}

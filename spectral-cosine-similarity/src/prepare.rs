@@ -20,6 +20,20 @@ fn mgf_sources() -> Vec<(&'static str, &'static str)> {
 
 /// Parse MGF files and insert spectra into the database.
 pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
+    let raw_sources = mgf_sources();
+    let sources: Vec<(&Path, &str)> = raw_sources
+        .iter()
+        .map(|(path, source_label)| (Path::new(*path), *source_label))
+        .collect();
+    run_with_sources(conn, max_spectra, &sources);
+}
+
+/// Parse explicit MGF sources and insert spectra into the database.
+pub fn run_with_sources(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    sources: &[(&Path, &str)],
+) {
     // Collect names already in the DB to avoid duplicates.
     let existing_names: std::collections::HashSet<String> = spectra::table
         .select(spectra::name)
@@ -37,7 +51,6 @@ pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
         return;
     }
 
-    let sources = mgf_sources();
     eprintln!(
         "[prepare] {} spectra already in DB, scanning {} source(s) for missing spectra...",
         total_existing,
@@ -48,10 +61,9 @@ pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
     let mut inserted_total = 0usize;
     let mut processed_sources = 0usize;
 
-    for (path, source_label) in sources {
-        let mgf_path = Path::new(path);
+    for (mgf_path, source_label) in sources {
         if !mgf_path.exists() {
-            eprintln!("[prepare] Skipping {path} (not found)");
+            eprintln!("[prepare] Skipping {} (not found)", mgf_path.display());
             continue;
         }
         processed_sources += 1;
@@ -125,7 +137,7 @@ mod tests {
     use super::*;
     use diesel::sql_query;
     use std::collections::HashSet;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn setup_in_memory_connection() -> SqliteConnection {
         let mut conn = SqliteConnection::establish(":memory:")
@@ -149,12 +161,11 @@ mod tests {
     }
 
     fn unique_pesticide_spectra() -> Vec<(String, crate::mgf_parser::ParsedSpectrum)> {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let fixture = manifest_dir.join("fixtures").join("pesticides.mgf");
+        let fixture = pesticide_fixture_path();
         let mut unique = Vec::new();
         let mut seen = HashSet::new();
 
-        for spec in parse_mgf(&fixture, MIN_PEAKS) {
+        for spec in parse_mgf(fixture.as_path(), MIN_PEAKS) {
             let name = sanitize_name(&spec.raw_name);
             if name.is_empty() || !seen.insert(name.clone()) {
                 continue;
@@ -163,6 +174,12 @@ mod tests {
         }
 
         unique
+    }
+
+    fn pesticide_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join("pesticides.mgf")
     }
 
     #[test]
@@ -189,7 +206,10 @@ mod tests {
             .execute(&mut conn)
             .expect("failed to seed first spectrum");
 
-        run(&mut conn, Some(total_unique));
+        let fixture = pesticide_fixture_path();
+        let sources: [(&Path, &str); 1] = [(fixture.as_path(), "pesticides.mgf")];
+
+        run_with_sources(&mut conn, Some(total_unique), &sources);
 
         let count_after_backfill = spectra::table
             .select(diesel::dsl::count_star())
@@ -197,7 +217,7 @@ mod tests {
             .expect("failed to count rows after backfill");
         assert_eq!(count_after_backfill, total_unique as i64);
 
-        run(&mut conn, Some(total_unique));
+        run_with_sources(&mut conn, Some(total_unique), &sources);
 
         let count_after_second_run = spectra::table
             .select(diesel::dsl::count_star())

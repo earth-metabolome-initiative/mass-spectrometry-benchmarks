@@ -19,7 +19,14 @@ const CHART_UPDATE_INTERVAL: usize = 50_000;
 /// Compute similarities and timings for all implementations in a single pass,
 /// interleaving Rust and Python in batches so that charts stay up to date.
 pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
-    compute_all(conn, max_spectra);
+    run_with_matchms(conn, max_spectra, run_matchms_default);
+}
+
+pub fn run_with_matchms<F>(conn: &mut SqliteConnection, max_spectra: Option<usize>, run_matchms: F)
+where
+    F: Fn(Option<usize>),
+{
+    compute_all(conn, max_spectra, &run_matchms);
     print_timing_report(conn);
 }
 
@@ -36,7 +43,7 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
     batch.clear();
 }
 
-fn run_matchms(max_spectra: Option<usize>) {
+fn run_matchms_default(max_spectra: Option<usize>) {
     eprintln!("[compute] Running matchms...");
     let db = db::db_path(max_spectra);
     let batch_size = CHART_UPDATE_INTERVAL.to_string();
@@ -56,7 +63,10 @@ fn run_matchms(max_spectra: Option<usize>) {
     }
 }
 
-fn compute_all(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
+fn compute_all<F>(conn: &mut SqliteConnection, max_spectra: Option<usize>, run_matchms: &F)
+where
+    F: Fn(Option<usize>),
+{
     let impl_id = db::get_implementation_id(conn, "CosineHungarian", "mass-spectrometry-traits");
     let experiments = db::load_experiments(conn);
 

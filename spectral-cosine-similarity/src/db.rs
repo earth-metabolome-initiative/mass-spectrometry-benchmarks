@@ -1,6 +1,7 @@
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sqlite::SqliteConnection;
+use std::path::Path;
 
 use crate::models::*;
 use crate::schema::*;
@@ -32,6 +33,12 @@ pub fn db_path(_max_spectra: Option<usize>) -> &'static str {
 pub fn establish_connection(max_spectra: Option<usize>) -> SqliteConnection {
     let path = db_path(max_spectra);
     SqliteConnection::establish(path).unwrap_or_else(|e| panic!("Error connecting to {path}: {e}"))
+}
+
+pub fn establish_connection_at(path: &Path) -> SqliteConnection {
+    let path_str = path.to_string_lossy();
+    SqliteConnection::establish(path_str.as_ref())
+        .unwrap_or_else(|e| panic!("Error connecting to {}: {e}", path.display()))
 }
 
 pub fn initialize(conn: &mut SqliteConnection) {
@@ -187,20 +194,10 @@ fn ensure_experiment(conn: &mut SqliteConnection, params: &ExperimentParams) -> 
 
 fn rust_lib_version() -> String {
     let lock_path = "Cargo.lock";
-    if let Ok(content) = std::fs::read_to_string(lock_path) {
-        let mut in_mass_spec = false;
-        for line in content.lines() {
-            if line.starts_with("name = \"mass_spectrometry\"") {
-                in_mass_spec = true;
-            } else if in_mass_spec && line.starts_with("version = ") {
-                return line
-                    .trim_start_matches("version = ")
-                    .trim_matches('"')
-                    .to_string();
-            } else if in_mass_spec && line.starts_with("[[") {
-                break;
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(lock_path)
+        && let Some(version) = extract_mass_spec_version(&content)
+    {
+        return version;
     }
     "unknown".to_string()
 }
@@ -208,18 +205,41 @@ fn rust_lib_version() -> String {
 fn rust_lib_git_commit() -> Option<String> {
     let lock_path = "Cargo.lock";
     if let Ok(content) = std::fs::read_to_string(lock_path) {
-        let mut in_mass_spec = false;
-        for line in content.lines() {
-            if line.starts_with("name = \"mass_spectrometry\"") {
-                in_mass_spec = true;
-            } else if in_mass_spec && line.starts_with("source = ") {
-                let source = line.trim_start_matches("source = ").trim_matches('"');
-                if let Some(hash) = source.split('#').nth(1) {
-                    return Some(hash.to_string());
-                }
-            } else if in_mass_spec && line.starts_with("[[") {
-                break;
+        return extract_mass_spec_git_commit(&content);
+    }
+    None
+}
+
+pub(crate) fn extract_mass_spec_version(lock_content: &str) -> Option<String> {
+    let mut in_mass_spec = false;
+    for line in lock_content.lines() {
+        if line.starts_with("name = \"mass_spectrometry\"") {
+            in_mass_spec = true;
+        } else if in_mass_spec && line.starts_with("version = ") {
+            return Some(
+                line.trim_start_matches("version = ")
+                    .trim_matches('"')
+                    .to_string(),
+            );
+        } else if in_mass_spec && line.starts_with("[[") {
+            break;
+        }
+    }
+    None
+}
+
+pub(crate) fn extract_mass_spec_git_commit(lock_content: &str) -> Option<String> {
+    let mut in_mass_spec = false;
+    for line in lock_content.lines() {
+        if line.starts_with("name = \"mass_spectrometry\"") {
+            in_mass_spec = true;
+        } else if in_mass_spec && line.starts_with("source = ") {
+            let source = line.trim_start_matches("source = ").trim_matches('"');
+            if let Some(hash) = source.split('#').nth(1) {
+                return Some(hash.to_string());
             }
+        } else if in_mass_spec && line.starts_with("[[") {
+            break;
         }
     }
     None
@@ -260,4 +280,74 @@ pub fn load_experiments(conn: &mut SqliteConnection) -> Vec<Experiment> {
     experiments::table
         .load::<Experiment>(conn)
         .expect("failed to load experiments")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diesel::dsl::count_star;
+
+    fn setup_in_memory_connection() -> SqliteConnection {
+        SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite connection")
+    }
+
+    #[test]
+    fn extracts_mass_spec_version_and_commit() {
+        let lock = r#"
+[[package]]
+name = "serde"
+version = "1.0.0"
+
+[[package]]
+name = "mass_spectrometry"
+version = "0.9.1"
+source = "git+https://example.com/repo#abc123def"
+"#;
+
+        assert_eq!(extract_mass_spec_version(lock), Some("0.9.1".to_string()));
+        assert_eq!(
+            extract_mass_spec_git_commit(lock),
+            Some("abc123def".to_string())
+        );
+    }
+
+    #[test]
+    fn initialize_is_idempotent_and_seeds_expected_rows() {
+        let mut conn = setup_in_memory_connection();
+
+        initialize(&mut conn);
+        initialize(&mut conn);
+
+        let algorithm_count = algorithms::table
+            .select(count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count algorithms");
+        let implementation_count = implementations::table
+            .select(count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count implementations");
+        let experiment_count = experiments::table
+            .select(count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count experiments");
+
+        assert_eq!(algorithm_count, 2);
+        assert_eq!(implementation_count, 3);
+        assert_eq!(experiment_count, PARAM_SETS.len() as i64);
+    }
+
+    #[test]
+    fn resolves_seeded_implementation_ids() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let rust_hungarian =
+            get_implementation_id(&mut conn, "CosineHungarian", "mass-spectrometry-traits");
+        let matchms_hungarian = get_implementation_id(&mut conn, "CosineHungarian", "matchms");
+        let matchms_greedy = get_implementation_id(&mut conn, "CosineGreedy", "matchms");
+
+        assert_ne!(rust_hungarian, matchms_hungarian);
+        assert_ne!(matchms_hungarian, matchms_greedy);
+        assert_ne!(rust_hungarian, matchms_greedy);
+    }
 }

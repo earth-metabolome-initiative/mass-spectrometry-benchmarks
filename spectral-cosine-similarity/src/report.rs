@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
@@ -606,8 +607,12 @@ fn compare_results(conn: &mut SqliteConnection) {
 }
 
 pub fn run(conn: &mut SqliteConnection) {
+    run_to_dir(conn, Path::new("output"));
+}
+
+pub fn run_to_dir(conn: &mut SqliteConnection, output_dir: &Path) {
     eprintln!("[report] Generating charts...");
-    fs::create_dir_all("output").expect("failed to create output directory");
+    fs::create_dir_all(output_dir).expect("failed to create output directory");
 
     let spectra_peaks = load_spectra_peaks(conn);
     let data = load_result_data(conn);
@@ -616,17 +621,119 @@ pub fn run(conn: &mut SqliteConnection) {
 
     let timing_chart = build_timing_chart(&data, &spectra_peaks, &color_map);
     if !timing_chart.series.is_empty() {
-        render_grouped_bar_chart(&timing_chart, "output/timing_by_peaks.svg")
+        let timing_path = output_dir.join("timing_by_peaks.svg");
+        render_grouped_bar_chart(&timing_chart, timing_path.to_string_lossy().as_ref())
             .expect("failed to render timing chart");
-        eprintln!("[report] Written output/timing_by_peaks.svg");
+        eprintln!("[report] Written {}", timing_path.display());
     }
 
     let mse_chart = build_mse_chart(&data, &spectra_peaks, &color_map);
     if !mse_chart.series.is_empty() {
-        render_grouped_bar_chart(&mse_chart, "output/mse_score_by_peaks.svg")
+        let mse_path = output_dir.join("mse_score_by_peaks.svg");
+        render_grouped_bar_chart(&mse_chart, mse_path.to_string_lossy().as_ref())
             .expect("failed to render MSE chart");
-        eprintln!("[report] Written output/mse_score_by_peaks.svg");
+        eprintln!("[report] Written {}", mse_path.display());
     }
 
     compare_results(conn);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn sample_row(algo: &str, lib: &str, score: f32, median_time_us: f32) -> ResultRow {
+        ResultRow {
+            score,
+            median_time_us,
+            algo_name: algo.to_string(),
+            lib_name: lib.to_string(),
+            left_id: 1,
+            right_id: 1,
+            experiment_id: 1,
+        }
+    }
+
+    #[test]
+    fn bucket_boundaries_and_labels_are_stable() {
+        assert_eq!(bucket_index(4), None);
+        assert_eq!(bucket_index(5), Some(0));
+        assert_eq!(bucket_index(8), Some(0));
+        assert_eq!(bucket_index(9), Some(1));
+        assert_eq!(bucket_index(513), Some(BUCKET_BOUNDARIES.len() - 1));
+
+        let labels = bucket_labels();
+        assert_eq!(labels.first().expect("missing first label"), "5–8");
+        assert_eq!(labels.last().expect("missing last label"), "513+");
+        assert_eq!(labels.len(), BUCKET_BOUNDARIES.len());
+    }
+
+    #[test]
+    fn mean_and_std_dev_handle_edge_cases() {
+        assert_eq!(mean(&[]), 0.0);
+        assert_eq!(std_dev(&[]), 0.0);
+        assert_eq!(std_dev(&[42.0]), 0.0);
+
+        let m = mean(&[2.0, 4.0, 6.0]);
+        let sd = std_dev(&[2.0, 4.0, 6.0]);
+        assert!((m - 4.0).abs() < 1e-9);
+        assert!((sd - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn build_color_map_is_independent_of_input_order() {
+        let data_a = vec![
+            sample_row("CosineHungarian", "matchms", 0.1, 1.0),
+            sample_row("CosineGreedy", "matchms", 0.2, 2.0),
+            sample_row("CosineHungarian", "mass-spectrometry-traits", 0.3, 3.0),
+        ];
+        let data_b = vec![
+            sample_row("CosineHungarian", "mass-spectrometry-traits", 0.3, 3.0),
+            sample_row("CosineHungarian", "matchms", 0.1, 1.0),
+            sample_row("CosineGreedy", "matchms", 0.2, 2.0),
+        ];
+
+        assert_eq!(build_color_map(&data_a), build_color_map(&data_b));
+    }
+
+    #[test]
+    fn svg_attribute_extractors_parse_expected_values() {
+        let line = r##"<rect x="1.5" y="2.5" width="10" fill="#FFFFFF" opacity="0.8"/>"##;
+        assert_eq!(svg_attr(line, "x"), Some(1.5));
+        assert_eq!(svg_attr(line, "width"), Some(10.0));
+        assert_eq!(svg_attr(line, "missing"), None);
+        assert_eq!(svg_str_attr(line, "fill"), Some("#FFFFFF"));
+        assert_eq!(svg_str_attr(line, "stroke"), None);
+    }
+
+    #[test]
+    fn round_bars_rewrites_data_bars_and_rounds_legend_rectangles() {
+        let mut file = NamedTempFile::new().expect("failed to create temporary svg file");
+        writeln!(
+            file,
+            "\
+<svg>
+<rect x=\"1\" y=\"2\" width=\"10\" height=\"20\" fill=\"#529ADC\" opacity=\"1\"/>
+<rect x=\"2\" y=\"3\" width=\"14\" height=\"14\" fill=\"#529ADC\" opacity=\"1\"/>
+<rect x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"#FFFFFF\" opacity=\"0.8\"/>
+<rect x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"none\" stroke=\"#000000\"/>
+<rect x=\"5\" y=\"6\" width=\"7\" height=\"8\" fill=\"#000000\" opacity=\"1\"/>
+</svg>"
+        )
+        .expect("failed to write temporary svg");
+
+        let path = file.path().to_string_lossy().to_string();
+        round_bars(&path);
+
+        let content = fs::read_to_string(file.path()).expect("failed to read processed svg");
+        assert!(content.contains("<path d=\"M 1,22"));
+        assert!(content.contains("<rect rx=\"2\" ry=\"2\" x=\"2\" y=\"3\""));
+        assert!(content.contains("<rect rx=\"3\" ry=\"3\" x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"#FFFFFF\" opacity=\"0.8\"/>"));
+        assert!(content.contains("<rect rx=\"3\" ry=\"3\" x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"none\" stroke=\"#000000\"/>"));
+        assert!(content.contains(
+            "<rect x=\"5\" y=\"6\" width=\"7\" height=\"8\" fill=\"#000000\" opacity=\"1\"/>"
+        ));
+    }
 }

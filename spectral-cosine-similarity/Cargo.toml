@@ -3,6 +3,10 @@ name = "spectral-cosine-similarity"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+python-tests = []
+
 [dependencies]
 mass_spectrometry = { git = "https://github.com/earth-metabolome-initiative/mass-spectrometry-traits" }
 diesel = { version = "2", features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
@@ -13,6 +17,9 @@ indicatif = "0.17"
 clap = { version = "4", features = ["derive"] }
 plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series"] }
 sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

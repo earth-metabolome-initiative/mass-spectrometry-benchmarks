@@ -53,3 +53,59 @@ impl Peaks {
         spectrum
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Peaks;
+    use diesel::prelude::*;
+    use diesel::sql_query;
+    use diesel::sql_types::Text;
+    use mass_spectrometry::prelude::Spectrum;
+
+    #[derive(diesel::QueryableByName)]
+    struct PeakRow {
+        #[diesel(sql_type = Text)]
+        peaks: Peaks,
+    }
+
+    #[test]
+    fn to_generic_spectrum_sorts_and_merges_duplicate_mz() {
+        let peaks = Peaks(vec![(200.0, 2.0), (100.0, 1.0), (200.0, 3.0), (150.0, 4.0)]);
+        let spectrum = peaks.to_generic_spectrum(400.0);
+
+        assert_eq!(spectrum.len(), 3);
+        assert_eq!(
+            spectrum.peaks().collect::<Vec<_>>(),
+            vec![(100.0, 1.0), (150.0, 4.0), (200.0, 5.0)]
+        );
+    }
+
+    #[test]
+    fn sqlite_roundtrips_peaks_json() {
+        let mut conn =
+            SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite db");
+
+        sql_query(
+            "CREATE TABLE peak_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                peaks TEXT NOT NULL
+            )",
+        )
+        .execute(&mut conn)
+        .expect("failed to create test table");
+
+        let input = Peaks(vec![(101.1, 5.0), (102.2, 6.0)]);
+
+        sql_query("INSERT INTO peak_rows (peaks) VALUES (?)")
+            .bind::<Text, _>(input.clone())
+            .execute(&mut conn)
+            .expect("failed to insert test peaks");
+
+        let loaded = sql_query("SELECT peaks FROM peak_rows")
+            .load::<PeakRow>(&mut conn)
+            .expect("failed to load inserted peaks");
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].peaks.0, input.0);
+    }
+}
