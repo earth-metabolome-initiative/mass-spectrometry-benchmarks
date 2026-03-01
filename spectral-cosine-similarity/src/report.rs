@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use diesel::prelude::*;
@@ -50,12 +51,21 @@ struct ResultRow {
     experiment_id: i32,
 }
 
+#[derive(QueryableByName)]
+struct CanonicalAlgorithmRow {
+    #[diesel(sql_type = Text)]
+    algorithm_name: String,
+    #[diesel(sql_type = Text)]
+    canonical_algorithm_name: String,
+}
+
 #[derive(Clone, Debug)]
 struct LineSeriesData {
     label: String,
     color: RGBColor,
     values: Vec<f64>,
     std_devs: Vec<f64>,
+    counts: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -198,6 +208,22 @@ fn load_result_data(conn: &mut SqliteConnection) -> Vec<ResultRow> {
         .collect()
 }
 
+fn load_algorithm_canonical_map(conn: &mut SqliteConnection) -> HashMap<String, String> {
+    let rows: Vec<CanonicalAlgorithmRow> = sql_query(
+        "SELECT child.name AS algorithm_name,
+                COALESCE(parent.name, child.name) AS canonical_algorithm_name
+         FROM algorithms child
+         LEFT JOIN algorithms parent ON child.approximates_algorithm_id = parent.id
+         ORDER BY child.id",
+    )
+    .load(conn)
+    .expect("failed to load canonical algorithm map");
+
+    rows.into_iter()
+        .map(|r| (r.algorithm_name, r.canonical_algorithm_name))
+        .collect()
+}
+
 fn algorithm_references(data: &[ResultRow]) -> HashMap<String, AlgorithmReference> {
     let mut refs: HashMap<String, AlgorithmReference> = HashMap::new();
 
@@ -251,6 +277,7 @@ fn grouped_to_facets(
                     label,
                     values: buckets.iter().map(|b| mean(b)).collect(),
                     std_devs: buckets.iter().map(|b| std_dev(b)).collect(),
+                    counts: buckets.iter().map(Vec::len).collect(),
                 })
                 .collect();
 
@@ -275,6 +302,7 @@ fn build_timing_chart(
     spectra_peaks: &HashMap<i32, i32>,
     color_map: &HashMap<String, RGBColor>,
     references: &HashMap<String, AlgorithmReference>,
+    canonical_algorithm_map: &HashMap<String, String>,
 ) -> FacetedLineChart {
     let labels = bucket_labels();
     let n_buckets = labels.len();
@@ -282,7 +310,11 @@ fn build_timing_chart(
     let mut grouped: HashMap<(String, String), Vec<Vec<f64>>> = HashMap::new();
 
     for row in data {
-        let Some(reference) = references.get(&row.algo_name) else {
+        let canonical_algorithm_name = canonical_algorithm_map
+            .get(&row.algo_name)
+            .map(String::as_str)
+            .unwrap_or(&row.algo_name);
+        let Some(reference) = references.get(canonical_algorithm_name) else {
             continue;
         };
 
@@ -366,6 +398,162 @@ fn build_mse_chart(
         "MSE",
         true,
     )
+}
+
+fn omit_empty_buckets(chart: FacetedLineChart) -> FacetedLineChart {
+    let FacetedLineChart {
+        title,
+        y_label,
+        bucket_labels,
+        facets,
+        log_y,
+    } = chart;
+
+    if bucket_labels.is_empty() || facets.is_empty() {
+        return FacetedLineChart {
+            title,
+            y_label,
+            bucket_labels,
+            facets,
+            log_y,
+        };
+    }
+
+    let keep_indices: Vec<usize> = (0..bucket_labels.len())
+        .filter(|&idx| {
+            facets
+                .iter()
+                .flat_map(|facet| facet.series.iter())
+                .any(|series| series.counts.get(idx).copied().unwrap_or(0) > 0)
+        })
+        .collect();
+
+    if keep_indices.len() == bucket_labels.len() {
+        return FacetedLineChart {
+            title,
+            y_label,
+            bucket_labels,
+            facets,
+            log_y,
+        };
+    }
+
+    let filtered_labels: Vec<String> = keep_indices
+        .iter()
+        .map(|&idx| bucket_labels[idx].clone())
+        .collect();
+
+    let filtered_facets: Vec<FacetChart> = facets
+        .into_iter()
+        .map(|facet| {
+            let filtered_series = facet
+                .series
+                .into_iter()
+                .map(|series| {
+                    let values = keep_indices
+                        .iter()
+                        .map(|&idx| series.values.get(idx).copied().unwrap_or(0.0))
+                        .collect();
+                    let std_devs = keep_indices
+                        .iter()
+                        .map(|&idx| series.std_devs.get(idx).copied().unwrap_or(0.0))
+                        .collect();
+                    let counts = keep_indices
+                        .iter()
+                        .map(|&idx| series.counts.get(idx).copied().unwrap_or(0))
+                        .collect();
+
+                    LineSeriesData {
+                        label: series.label,
+                        color: series.color,
+                        values,
+                        std_devs,
+                        counts,
+                    }
+                })
+                .collect();
+
+            FacetChart {
+                title: facet.title,
+                series: filtered_series,
+            }
+        })
+        .collect();
+
+    FacetedLineChart {
+        title,
+        y_label,
+        bucket_labels: filtered_labels,
+        facets: filtered_facets,
+        log_y,
+    }
+}
+
+fn markdown_table_cell(value: f64, std_dev: f64, count: usize) -> String {
+    if count == 0 {
+        return "-".to_string();
+    }
+    if std_dev > 0.0 {
+        format!("{value:.3e} ± {std_dev:.2e} (n={count})")
+    } else {
+        format!("{value:.3e} (n={count})")
+    }
+}
+
+fn append_chart_markdown(markdown: &mut String, chart: &FacetedLineChart) {
+    markdown.push_str(&format!("## {}\n\n", chart.title));
+    markdown.push_str(&format!("Y-axis: `{}`\n\n", chart.y_label));
+
+    if chart.facets.is_empty() || chart.bucket_labels.is_empty() {
+        markdown.push_str("_No data available._\n\n");
+        return;
+    }
+
+    for facet in &chart.facets {
+        markdown.push_str(&format!("### {}\n\n", facet.title));
+        markdown.push_str("| Series |");
+        for label in &chart.bucket_labels {
+            markdown.push_str(&format!(" {label} |"));
+        }
+        markdown.push('\n');
+
+        markdown.push_str("| --- |");
+        for _ in &chart.bucket_labels {
+            markdown.push_str(" --- |");
+        }
+        markdown.push('\n');
+
+        for series in &facet.series {
+            markdown.push_str(&format!("| {} |", series.label.replace('|', "\\|")));
+            for idx in 0..chart.bucket_labels.len() {
+                let value = series.values.get(idx).copied().unwrap_or(0.0);
+                let std_dev = series.std_devs.get(idx).copied().unwrap_or(0.0);
+                let count = series.counts.get(idx).copied().unwrap_or(0);
+                markdown.push_str(&format!(
+                    " {} |",
+                    markdown_table_cell(value, std_dev, count)
+                ));
+            }
+            markdown.push('\n');
+        }
+        markdown.push('\n');
+    }
+}
+
+fn write_markdown_tables(
+    output_path: &Path,
+    timing_chart: &FacetedLineChart,
+    mse_chart: &FacetedLineChart,
+) {
+    let mut markdown = String::from("# Benchmark Tables\n\n");
+    append_chart_markdown(&mut markdown, timing_chart);
+    append_chart_markdown(&mut markdown, mse_chart);
+    fs::write(output_path, markdown).unwrap_or_else(|err| {
+        panic!(
+            "failed to write markdown report {}: {err}",
+            output_path.display()
+        )
+    });
 }
 
 fn render_facet_chart<DB: DrawingBackend>(
@@ -602,6 +790,14 @@ fn render_faceted_line_chart(
     Ok(())
 }
 
+fn remove_file_if_exists(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => panic!("failed to remove stale chart {}: {err}", path.display()),
+    }
+}
+
 #[derive(QueryableByName)]
 #[allow(dead_code)]
 struct ComparisonRow {
@@ -742,32 +938,55 @@ pub fn run_to_dir_with_progress(
     emit(&mut progress, "[report] Loading result data");
     let spectra_peaks = load_spectra_peaks(conn);
     let data = load_result_data(conn);
+    let canonical_algorithm_map = load_algorithm_canonical_map(conn);
     let references = algorithm_references(&data);
     let color_map = build_color_map(&data);
 
-    let timing_chart = build_timing_chart(&data, &spectra_peaks, &color_map, &references);
-    if !timing_chart.facets.is_empty() {
+    let timing_chart = omit_empty_buckets(build_timing_chart(
+        &data,
+        &spectra_peaks,
+        &color_map,
+        &references,
+        &canonical_algorithm_map,
+    ));
+    let timing_path = output_dir.join("timing_by_peaks.svg");
+    if !timing_chart.facets.is_empty() && !timing_chart.bucket_labels.is_empty() {
         emit(&mut progress, "[report] Rendering timing chart");
-        let timing_path = output_dir.join("timing_by_peaks.svg");
         render_faceted_line_chart(&timing_chart, timing_path.to_string_lossy().as_ref())
             .expect("failed to render timing chart");
         emit(
             &mut progress,
             &format!("[report] Written {}", timing_path.display()),
         );
+    } else {
+        remove_file_if_exists(&timing_path);
     }
 
-    let mse_chart = build_mse_chart(&data, &spectra_peaks, &color_map, &references);
-    if !mse_chart.facets.is_empty() {
+    let mse_chart = omit_empty_buckets(build_mse_chart(
+        &data,
+        &spectra_peaks,
+        &color_map,
+        &references,
+    ));
+    let mse_path = output_dir.join("mse_score_by_peaks.svg");
+    if !mse_chart.facets.is_empty() && !mse_chart.bucket_labels.is_empty() {
         emit(&mut progress, "[report] Rendering MSE chart");
-        let mse_path = output_dir.join("mse_score_by_peaks.svg");
         render_faceted_line_chart(&mse_chart, mse_path.to_string_lossy().as_ref())
             .expect("failed to render MSE chart");
         emit(
             &mut progress,
             &format!("[report] Written {}", mse_path.display()),
         );
+    } else {
+        remove_file_if_exists(&mse_path);
     }
+
+    let markdown_path = output_dir.join("tables_by_peaks.md");
+    write_markdown_tables(&markdown_path, &timing_chart, &mse_chart);
+    emit(
+        &mut progress,
+        &format!("[report] Written {}", markdown_path.display()),
+    );
 
     compare_results(conn, progress);
 }
@@ -775,6 +994,8 @@ pub fn run_to_dir_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db;
+    use tempfile::TempDir;
 
     fn sample_row(implementation_id: i32, is_reference: bool, algo: &str, lib: &str) -> ResultRow {
         ResultRow {
@@ -898,6 +1119,100 @@ mod tests {
     }
 
     #[test]
+    fn timing_chart_groups_cosine_greedy_under_hungarian_reference() {
+        let data = vec![
+            ResultRow {
+                score: 0.9,
+                median_time_us: 10.0,
+                right_id: 2,
+                ..sample_row(10, true, "CosineHungarian", "matchms")
+            },
+            ResultRow {
+                score: 0.85,
+                median_time_us: 9.0,
+                right_id: 2,
+                ..sample_row(11, true, "CosineGreedy", "matchms")
+            },
+            ResultRow {
+                score: 0.8,
+                median_time_us: 8.0,
+                right_id: 2,
+                ..sample_row(12, false, "CosineHungarian", "mass-spectrometry-traits")
+            },
+        ];
+
+        let references = algorithm_references(&data);
+        let colors = build_color_map(&data);
+        let peaks: HashMap<i32, i32> = HashMap::from([(1, 10), (2, 12)]);
+        let canonical_map: HashMap<String, String> = HashMap::from([
+            ("CosineHungarian".to_string(), "CosineHungarian".to_string()),
+            ("CosineGreedy".to_string(), "CosineHungarian".to_string()),
+        ]);
+
+        let chart = build_timing_chart(&data, &peaks, &colors, &references, &canonical_map);
+
+        assert!(
+            chart
+                .facets
+                .iter()
+                .any(|f| f.title == "Reference: CosineHungarian (matchms)")
+        );
+        assert!(
+            !chart
+                .facets
+                .iter()
+                .any(|f| f.title == "Reference: CosineGreedy (matchms)")
+        );
+        let hungarian_facet = chart
+            .facets
+            .iter()
+            .find(|f| f.title == "Reference: CosineHungarian (matchms)")
+            .expect("missing CosineHungarian facet");
+        assert!(
+            hungarian_facet
+                .series
+                .iter()
+                .any(|s| s.label == "CosineGreedy (matchms)")
+        );
+    }
+
+    #[test]
+    fn omit_empty_buckets_drops_columns_with_no_observations() {
+        let chart = FacetedLineChart {
+            title: "test".to_string(),
+            y_label: "y".to_string(),
+            bucket_labels: vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            facets: vec![FacetChart {
+                title: "f".to_string(),
+                series: vec![
+                    LineSeriesData {
+                        label: "s1".to_string(),
+                        color: COLORS[0],
+                        values: vec![0.0, 2.0, 0.0],
+                        std_devs: vec![0.0, 0.2, 0.0],
+                        counts: vec![0, 3, 0],
+                    },
+                    LineSeriesData {
+                        label: "s2".to_string(),
+                        color: COLORS[1],
+                        values: vec![0.0, 1.0, 0.0],
+                        std_devs: vec![0.0, 0.1, 0.0],
+                        counts: vec![0, 2, 0],
+                    },
+                ],
+            }],
+            log_y: true,
+        };
+
+        let pruned = omit_empty_buckets(chart);
+        assert_eq!(pruned.bucket_labels, vec!["B"]);
+        assert_eq!(pruned.facets.len(), 1);
+        assert_eq!(pruned.facets[0].series.len(), 2);
+        assert_eq!(pruned.facets[0].series[0].counts, vec![3]);
+        assert_eq!(pruned.facets[0].series[1].counts, vec![2]);
+    }
+
+    #[test]
     fn mse_chart_is_grouped_by_reference_label() {
         let data = vec![
             ResultRow {
@@ -949,5 +1264,39 @@ mod tests {
                 .iter()
                 .any(|f| f.title == "Reference: EntropySimilarityWeighted (ms_entropy)")
         );
+    }
+
+    #[test]
+    fn run_to_dir_removes_stale_svgs_when_no_chart_data() {
+        let mut conn =
+            SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite db");
+        db::initialize(&mut conn);
+
+        let output_dir = TempDir::new().expect("failed to create temp output dir");
+        let timing_path = output_dir.path().join("timing_by_peaks.svg");
+        let mse_path = output_dir.path().join("mse_score_by_peaks.svg");
+        fs::write(&timing_path, "stale timing").expect("failed to create stale timing chart");
+        fs::write(&mse_path, "stale mse").expect("failed to create stale mse chart");
+
+        run_to_dir(&mut conn, output_dir.path());
+
+        assert!(
+            !timing_path.exists(),
+            "stale timing chart should be removed when timing chart has no data"
+        );
+        assert!(
+            !mse_path.exists(),
+            "stale MSE chart should be removed when MSE chart has no data"
+        );
+        let markdown_path = output_dir.path().join("tables_by_peaks.md");
+        assert!(
+            markdown_path.exists(),
+            "markdown report should always be written"
+        );
+        let markdown = fs::read_to_string(&markdown_path).expect("failed to read markdown report");
+        assert!(markdown.contains("# Benchmark Tables"));
+        assert!(markdown.contains("## Timing by Peak Count"));
+        assert!(markdown.contains("## MSE vs Reference by Peak Count"));
+        assert!(markdown.contains("_No data available._"));
     }
 }

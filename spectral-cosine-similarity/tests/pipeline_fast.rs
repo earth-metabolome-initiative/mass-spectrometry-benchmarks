@@ -25,10 +25,18 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
         let status = Command::new("uv")
             .current_dir(&manifest_dir)
             .env("UV_CACHE_DIR", &uv_cache_for_first_run)
-            .args(["run", "python3", "scripts/python_reference_compute.py", &db_path])
+            .args([
+                "run",
+                "python3",
+                "scripts/python_reference_compute.py",
+                &db_path,
+            ])
             .status()
             .expect("failed to run python reference compute script");
-        assert!(status.success(), "python reference compute script failed: {status}");
+        assert!(
+            status.success(),
+            "python reference compute script failed: {status}"
+        );
     });
 
     let output_dir = TempDir::new().expect("failed to create temporary output directory");
@@ -36,6 +44,7 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
 
     assert!(output_dir.path().join("timing_by_peaks.svg").exists());
     assert!(output_dir.path().join("mse_score_by_peaks.svg").exists());
+    assert!(output_dir.path().join("tables_by_peaks.md").exists());
 
     let spectra_count = spectra::table
         .select(count_star())
@@ -68,10 +77,18 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
         let status = Command::new("uv")
             .current_dir(&manifest_dir)
             .env("UV_CACHE_DIR", &uv_cache_for_second_run)
-            .args(["run", "python3", "scripts/python_reference_compute.py", &db_path])
+            .args([
+                "run",
+                "python3",
+                "scripts/python_reference_compute.py",
+                &db_path,
+            ])
             .status()
             .expect("failed to run python reference compute script");
-        assert!(status.success(), "python reference compute script failed: {status}");
+        assert!(
+            status.success(),
+            "python reference compute script failed: {status}"
+        );
     });
 
     let results_count_after_rerun = results::table
