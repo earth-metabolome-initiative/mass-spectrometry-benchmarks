@@ -17,7 +17,6 @@ def select_missing_work(
     id_pairs: list[tuple[int, int]],
     experiments: list[ExperimentData],
     existing: set[tuple[int, int, int]],
-    batch_size: int | None,
 ) -> list[WorkItem]:
     work: list[WorkItem] = []
     for left_id, right_id in id_pairs:
@@ -27,6 +26,4 @@ def select_missing_work(
             work.append(
                 WorkItem(left_id=left_id, right_id=right_id, experiment=experiment)
             )
-            if batch_size is not None and len(work) >= batch_size:
-                return work
     return work

@@ -22,12 +22,11 @@ def run_algorithm(
     experiments: list[ExperimentData],
     spectra: dict[int, SpectrumData],
     id_pairs: list[tuple[int, int]],
-    batch_size: int | None,
     compute_once: ComputeFn,
 ) -> int:
     cur = conn.cursor()
     existing = db_io.get_existing_keys(cur, implementation_id)
-    work = workload.select_missing_work(id_pairs, experiments, existing, batch_size)
+    work = workload.select_missing_work(id_pairs, experiments, existing)
 
     if not work:
         return 0

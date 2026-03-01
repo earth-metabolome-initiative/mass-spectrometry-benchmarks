@@ -4,13 +4,15 @@ Reads experiments, spectra, and implementations from the SQLite DB, generates
 spectrum pairs at runtime, computes Python-reference results for any missing
 pairs, and writes back to the results table.
 
-Usage: python_reference_compute.py <db_path> [batch_size] [max_spectra]
+Usage:
+  python_reference_compute.py <db_path> [max_spectra]
+  python_reference_compute.py <db_path> --max-spectra <max_spectra>
 """
 
 from __future__ import annotations
 
-import sqlite3
 import sys
+import sqlite3
 
 from python_ref import db_io
 from python_ref import runner
@@ -21,9 +23,53 @@ from python_ref.algorithms import entropy_unweighted
 from python_ref.algorithms import entropy_weighted
 from python_ref.algorithms import modified_greedy_cosine
 
-DB_PATH = sys.argv[1] if len(sys.argv) > 1 else "fixtures/benchmark.db"
-BATCH_SIZE = int(sys.argv[2]) if len(sys.argv) > 2 else None
-MAX_SPECTRA = int(sys.argv[3]) if len(sys.argv) > 3 else None
+def parse_cli_args(argv: list[str]) -> tuple[str, int | None]:
+    db_path = argv[1] if len(argv) > 1 else "fixtures/benchmark.db"
+    max_spectra: int | None = None
+    extra_positional: list[str] = []
+
+    i = 2
+    while i < len(argv):
+        token = argv[i]
+        if token == "--max-spectra":
+            if i + 1 >= len(argv):
+                raise SystemExit("missing value for --max-spectra")
+            max_spectra = int(argv[i + 1])
+            i += 2
+            continue
+        if token.startswith("--max-spectra="):
+            max_spectra = int(token.split("=", 1)[1])
+            i += 1
+            continue
+        extra_positional.append(token)
+        i += 1
+
+    if max_spectra is None:
+        if len(extra_positional) == 1:
+            max_spectra = int(extra_positional[0])
+        elif len(extra_positional) == 2:
+            _legacy_batch = int(extra_positional[0])
+            max_spectra = int(extra_positional[1])
+            print(
+                "[python_reference_compute] legacy batch_size argument is ignored",
+                file=sys.stderr,
+            )
+        elif len(extra_positional) > 2:
+            raise SystemExit("too many positional arguments")
+    else:
+        if len(extra_positional) == 1:
+            _legacy_batch = int(extra_positional[0])
+            print(
+                "[python_reference_compute] legacy batch_size argument is ignored",
+                file=sys.stderr,
+            )
+        elif len(extra_positional) > 1:
+            raise SystemExit("too many positional arguments")
+
+    return db_path, max_spectra
+
+
+DB_PATH, MAX_SPECTRA = parse_cli_args(sys.argv)
 
 ALGORITHMS = [
     ("CosineHungarian", "matchms", cosine_hungarian.compute_once),
@@ -52,7 +98,6 @@ def main() -> None:
                 experiments=experiments,
                 spectra=spectra,
                 id_pairs=id_pairs,
-                batch_size=BATCH_SIZE,
                 compute_once=compute_once,
             )
     finally:
