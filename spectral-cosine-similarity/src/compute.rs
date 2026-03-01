@@ -10,6 +10,7 @@ use diesel::sqlite::SqliteConnection;
 use indicatif::{ProgressBar, ProgressStyle};
 use mass_spectrometry::prelude::*;
 
+use crate::benchmark_topology;
 use crate::db;
 use crate::models::*;
 use crate::pair_selection::generate_pairs;
@@ -148,31 +149,45 @@ and ensure both `matchms` and `ms_entropy` import successfully."
     }
 }
 
-fn count_results_for_implementation(
+fn count_results_by_implementation(
     conn: &mut SqliteConnection,
-    implementation_id: i32,
+    implementation_ids: &[i32],
     spectrum_ids_filter: Option<&[i32]>,
-) -> i64 {
+) -> HashMap<i32, i64> {
+    if implementation_ids.is_empty() {
+        return HashMap::new();
+    }
     if let Some(ids) = spectrum_ids_filter
         && ids.is_empty()
     {
-        return 0;
+        return HashMap::new();
     }
 
-    let mut query = crate::schema::results::table
-        .filter(crate::schema::results::implementation_id.eq(implementation_id))
-        .into_boxed();
-
-    if let Some(ids) = spectrum_ids_filter {
-        query = query
+    let rows: Vec<(i32, i64)> = if let Some(ids) = spectrum_ids_filter {
+        crate::schema::results::table
+            .filter(crate::schema::results::implementation_id.eq_any(implementation_ids))
             .filter(crate::schema::results::left_id.eq_any(ids))
-            .filter(crate::schema::results::right_id.eq_any(ids));
-    }
+            .filter(crate::schema::results::right_id.eq_any(ids))
+            .group_by(crate::schema::results::implementation_id)
+            .select((
+                crate::schema::results::implementation_id,
+                diesel::dsl::count_star(),
+            ))
+            .load(conn)
+            .expect("failed to count filtered implementation results")
+    } else {
+        crate::schema::results::table
+            .filter(crate::schema::results::implementation_id.eq_any(implementation_ids))
+            .group_by(crate::schema::results::implementation_id)
+            .select((
+                crate::schema::results::implementation_id,
+                diesel::dsl::count_star(),
+            ))
+            .load(conn)
+            .expect("failed to count implementation results")
+    };
 
-    query
-        .select(diesel::dsl::count_star())
-        .first::<i64>(conn)
-        .expect("failed to count implementation results")
+    rows.into_iter().collect()
 }
 
 fn python_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
@@ -186,12 +201,35 @@ fn python_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
 }
 
 fn count_python_results(conn: &mut SqliteConnection, spectrum_ids_filter: Option<&[i32]>) -> i64 {
-    python_implementation_ids(conn)
-        .into_iter()
-        .map(|implementation_id| {
-            count_results_for_implementation(conn, implementation_id, spectrum_ids_filter)
-        })
+    let python_ids = python_implementation_ids(conn);
+    count_results_by_implementation(conn, &python_ids, spectrum_ids_filter)
+        .into_values()
         .sum()
+}
+
+fn tracked_implementation_ids(conn: &mut SqliteConnection) -> Vec<i32> {
+    let mut ids: Vec<i32> = benchmark_topology::load_resolved_implementations(conn)
+        .into_iter()
+        .filter(|row| {
+            (row.library_name == RUST_LIBRARY_NAME
+                && RUST_ALGORITHMS.contains(&row.algorithm_name.as_str()))
+                || row.library_language == "python"
+        })
+        .map(|row| row.implementation_id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn load_limited_spectrum_ids(conn: &mut SqliteConnection, max_spectra: usize) -> Vec<i32> {
+    let limit = i64::try_from(max_spectra).unwrap_or(i64::MAX);
+    crate::schema::spectra::table
+        .order(crate::schema::spectra::id.asc())
+        .limit(limit)
+        .select(crate::schema::spectra::id)
+        .load(conn)
+        .expect("failed to load limited spectrum ids")
 }
 
 /// Estimate remaining compute workload units.
@@ -199,34 +237,39 @@ fn count_python_results(conn: &mut SqliteConnection, spectrum_ids_filter: Option
 /// One unit is one `(left_id, right_id, experiment_id, implementation_id)` result row
 /// that still needs to be produced by either Rust or Python implementations.
 pub fn estimate_remaining_work(conn: &mut SqliteConnection, max_spectra: Option<usize>) -> u64 {
-    let context = load_compute_context(conn, max_spectra);
-    let expected_per_implementation = context
-        .id_pairs
-        .len()
-        .saturating_mul(context.experiments.len()) as i64;
+    let spectrum_ids = max_spectra.map(|max| load_limited_spectrum_ids(conn, max));
+    let n_spectra = if let Some(ids) = spectrum_ids.as_ref() {
+        ids.len() as i64
+    } else {
+        crate::schema::spectra::table
+            .select(diesel::dsl::count_star())
+            .first::<i64>(conn)
+            .expect("failed to count spectra")
+    };
+    let n_pairs = n_spectra.saturating_mul(n_spectra + 1) / 2;
+    let experiments_count = crate::schema::experiments::table
+        .select(diesel::dsl::count_star())
+        .first::<i64>(conn)
+        .expect("failed to count experiments");
+    let expected_per_implementation = n_pairs.saturating_mul(experiments_count);
     if expected_per_implementation == 0 {
         return 0;
     }
-    let spectrum_ids_filter = max_spectra.map(|_| context.spectrum_ids.as_slice());
+    let spectrum_ids_filter = spectrum_ids.as_deref();
+    let implementation_ids = tracked_implementation_ids(conn);
+    let existing_by_implementation =
+        count_results_by_implementation(conn, &implementation_ids, spectrum_ids_filter);
 
-    let mut rust_remaining: u64 = 0;
-    for algorithm_name in RUST_ALGORITHMS {
-        let implementation_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
-        let existing =
-            count_results_for_implementation(conn, implementation_id, spectrum_ids_filter);
-        rust_remaining += expected_per_implementation.saturating_sub(existing) as u64;
-    }
-
-    let python_remaining: u64 = python_implementation_ids(conn)
+    implementation_ids
         .into_iter()
         .map(|implementation_id| {
-            let existing =
-                count_results_for_implementation(conn, implementation_id, spectrum_ids_filter);
+            let existing = existing_by_implementation
+                .get(&implementation_id)
+                .copied()
+                .unwrap_or(0);
             expected_per_implementation.saturating_sub(existing) as u64
         })
-        .sum();
-
-    rust_remaining + python_remaining
+        .sum()
 }
 
 fn load_compute_context(conn: &mut SqliteConnection, max_spectra: Option<usize>) -> ComputeContext {
@@ -566,59 +609,50 @@ fn compute_all<F>(
 }
 
 fn print_timing_report(conn: &mut SqliteConnection) {
-    let algorithm_rows: Vec<(i32, String, Option<i32>)> = crate::schema::algorithms::table
-        .order(crate::schema::algorithms::id.asc())
-        .select((
-            crate::schema::algorithms::id,
-            crate::schema::algorithms::name,
-            crate::schema::algorithms::approximates_algorithm_id,
-        ))
-        .load(conn)
-        .expect("failed to load algorithms for timing report");
-
-    let algorithm_name_by_id: HashMap<i32, String> = algorithm_rows
-        .iter()
-        .map(|(algorithm_id, algorithm_name, _)| (*algorithm_id, algorithm_name.clone()))
-        .collect();
-    let canonical_algorithm_by_name: HashMap<String, String> = algorithm_rows
-        .into_iter()
-        .map(
-            |(algorithm_id, algorithm_name, approximates_algorithm_id)| {
-                let canonical_algorithm_id = approximates_algorithm_id.unwrap_or(algorithm_id);
-                let canonical_algorithm_name = algorithm_name_by_id
-                    .get(&canonical_algorithm_id)
-                    .cloned()
-                    .unwrap_or_else(|| algorithm_name.clone());
-                (algorithm_name, canonical_algorithm_name)
-            },
-        )
-        .collect();
-
-    let implementation_rows: Vec<(String, String, i32, bool)> =
-        crate::schema::implementations::table
-            .inner_join(crate::schema::algorithms::table)
-            .inner_join(crate::schema::libraries::table)
-            .order((
-                crate::schema::algorithms::name.asc(),
-                crate::schema::libraries::name.asc(),
-                crate::schema::implementations::id.asc(),
-            ))
-            .select((
-                crate::schema::algorithms::name,
-                crate::schema::libraries::name,
-                crate::schema::implementations::id,
-                crate::schema::implementations::is_reference,
-            ))
-            .load(conn)
-            .expect("failed to load implementations for timing report");
-
+    let resolved_rows = benchmark_topology::load_resolved_implementations(conn);
     let mut by_algorithm: BTreeMap<String, Vec<(String, i32, bool)>> = BTreeMap::new();
-    for (algorithm, library, implementation_id, is_reference) in implementation_rows {
+    let mut reference_by_algorithm: HashMap<String, (String, String, i32)> = HashMap::new();
+    for row in resolved_rows {
         by_algorithm
-            .entry(algorithm)
+            .entry(row.algorithm_name.clone())
             .or_default()
-            .push((library, implementation_id, is_reference));
+            .push((
+                row.library_name.clone(),
+                row.implementation_id,
+                row.is_reference,
+            ));
+
+        if let Some(reference_implementation_id) = row.canonical_reference_implementation_id {
+            let reference_library =
+                row.canonical_reference_library_name
+                    .clone()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "missing canonical reference library for algorithm '{}'",
+                            row.algorithm_name
+                        )
+                    });
+            let reference_info = (
+                row.canonical_algorithm_name.clone(),
+                reference_library,
+                reference_implementation_id,
+            );
+            match reference_by_algorithm.entry(row.algorithm_name.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(reference_info);
+                }
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    if entry.get() != &reference_info {
+                        panic!(
+                            "algorithm '{}' has conflicting canonical references",
+                            row.algorithm_name
+                        );
+                    }
+                }
+            }
+        }
     }
+
     for libraries in by_algorithm.values_mut() {
         libraries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
     }
@@ -636,18 +670,15 @@ fn print_timing_report(conn: &mut SqliteConnection) {
             .iter()
             .find(|(library, _, _)| library == RUST_LIBRARY_NAME)
             .map(|(_, implementation_id, _)| *implementation_id);
-        let canonical_algorithm = canonical_algorithm_by_name
-            .get(&algorithm)
-            .map(String::as_str)
+
+        let canonical_reference = reference_by_algorithm.get(&algorithm);
+        let canonical_algorithm = canonical_reference
+            .map(|(canonical_algorithm_name, _, _)| canonical_algorithm_name.as_str())
             .unwrap_or(algorithm.as_str());
         let reference_impl =
-            by_algorithm
-                .get(canonical_algorithm)
-                .and_then(|canonical_libraries| {
-                    canonical_libraries
-                        .iter()
-                        .find(|(_, _, is_reference)| *is_reference)
-                });
+            canonical_reference.map(|(_, reference_library, implementation_id)| {
+                (reference_library.as_str(), *implementation_id)
+            });
 
         let rust_stats = rust_impl.and_then(|implementation_id| {
             timing_stats(
@@ -656,14 +687,13 @@ fn print_timing_report(conn: &mut SqliteConnection) {
                 &format!("{algorithm} ({RUST_LIBRARY_NAME})"),
             )
         });
-        let reference_stats =
-            reference_impl.and_then(|(reference_library, implementation_id, _)| {
-                timing_stats(
-                    conn,
-                    *implementation_id,
-                    &format!("{canonical_algorithm} ({reference_library})"),
-                )
-            });
+        let reference_stats = reference_impl.and_then(|(reference_library, implementation_id)| {
+            timing_stats(
+                conn,
+                implementation_id,
+                &format!("{canonical_algorithm} ({reference_library})"),
+            )
+        });
 
         if let Some(ref stats) = rust_stats {
             print_algo_stats(stats);
@@ -677,7 +707,7 @@ fn print_timing_report(conn: &mut SqliteConnection) {
             && reference.mean > 0.0
         {
             let speedup = reference.mean / rust.mean;
-            if let Some((reference_library, _, _)) = reference_impl {
+            if let Some((reference_library, _)) = reference_impl {
                 if canonical_algorithm == algorithm {
                     eprintln!("Speedup ({algorithm}, Rust vs {reference_library}): {speedup:.1}x");
                 } else {
