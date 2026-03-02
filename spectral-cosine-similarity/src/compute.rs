@@ -194,13 +194,7 @@ pub fn run_with_matchms_and_progress<F>(
 ) where
     F: Fn(Option<usize>),
 {
-    run_with_matchms_and_progress_with_notifier(
-        conn,
-        max_spectra,
-        run_matchms,
-        progress,
-        None,
-    );
+    run_with_matchms_and_progress_with_notifier(conn, max_spectra, run_matchms, progress, None);
 }
 
 fn run_with_matchms_and_progress_with_notifier<F>(
