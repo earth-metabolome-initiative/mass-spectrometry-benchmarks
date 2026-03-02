@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 import time
 
@@ -12,6 +13,39 @@ from python_ref.types import ExperimentData
 from python_ref.types import SpectrumData
 
 COMMIT_INTERVAL = 500
+
+
+def _validate_score(
+    score: object,
+    *,
+    algorithm_label: str,
+    left_id: int,
+    right_id: int,
+    experiment_id: int,
+) -> float:
+    score = float(score)
+    if not math.isfinite(score):
+        raise RuntimeError(
+            f"[python_ref] {algorithm_label}: non-finite score {score} for "
+            f"(left_id={left_id}, right_id={right_id}, experiment_id={experiment_id})"
+        )
+    if score < 0.0 or score > 1.000001:
+        raise RuntimeError(
+            f"[python_ref] {algorithm_label}: score out of range for "
+            f"(left_id={left_id}, right_id={right_id}, experiment_id={experiment_id}): {score}"
+        )
+    if score > 1.0:
+        score = 1.0
+    return score
+
+
+def _validate_matches(matches: object) -> int:
+    matches = int(matches)
+    if matches < -1:
+        raise RuntimeError(
+            f"[python_ref] invalid matches value {matches}; expected >= -1"
+        )
+    return matches
 
 
 def run_algorithm(
@@ -48,7 +82,15 @@ def run_algorithm(
         matches = 0
         for _ in range(n_reps):
             t0 = time.perf_counter_ns()
-            score, matches = compute_once(left_spec, right_spec, params)
+            raw_score, raw_matches = compute_once(left_spec, right_spec, params)
+            score = _validate_score(
+                raw_score,
+                algorithm_label=algo_label,
+                left_id=item.left_id,
+                right_id=item.right_id,
+                experiment_id=item.experiment.id,
+            )
+            matches = _validate_matches(raw_matches)
             t1 = time.perf_counter_ns()
             times.append(t1 - t0)
 
