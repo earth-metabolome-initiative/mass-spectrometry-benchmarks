@@ -10,13 +10,41 @@ pub struct ParsedSpectrum {
     pub peaks: Vec<(f64, f64)>, // (mz, intensity), sorted by mz
 }
 
-/// Parse an MGF file and return all spectra with a name, precursor_mz, and at least `min_peaks` peaks.
-pub fn parse_mgf(path: &Path, min_peaks: usize) -> Vec<ParsedSpectrum> {
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ParseStats {
+    pub ions_blocks: usize,
+    pub accepted: usize,
+    pub dropped_missing_name: usize,
+    pub dropped_missing_precursor_mz: usize,
+    pub dropped_too_few_peaks: usize,
+}
+
+#[derive(Debug, Default)]
+pub struct ParseMgfResult {
+    pub spectra: Vec<ParsedSpectrum>,
+    pub stats: ParseStats,
+}
+
+fn preferred_name(
+    name: &Option<String>,
+    title: &Option<String>,
+    compound_name: &Option<String>,
+) -> Option<String> {
+    name.clone()
+        .or_else(|| title.clone())
+        .or_else(|| compound_name.clone())
+}
+
+/// Parse an MGF file and return all spectra with a preferred name, precursor_mz, and at least `min_peaks` peaks.
+pub fn parse_mgf(path: &Path, min_peaks: usize) -> ParseMgfResult {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {e}", path.display()));
     let reader = BufReader::new(file);
 
     let mut spectra = Vec::new();
-    let mut raw_name: Option<String> = None;
+    let mut stats = ParseStats::default();
+    let mut name: Option<String> = None;
+    let mut title: Option<String> = None;
+    let mut compound_name: Option<String> = None;
     let mut precursor_mz: Option<f64> = None;
     let mut peaks: Vec<(f64, f64)> = Vec::new();
     let mut in_ions = false;
@@ -26,20 +54,34 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> Vec<ParsedSpectrum> {
         let line = line.trim();
 
         if line == "BEGIN IONS" {
-            raw_name = None;
+            stats.ions_blocks += 1;
+            name = None;
+            title = None;
+            compound_name = None;
             precursor_mz = None;
             peaks.clear();
             in_ions = true;
         } else if line == "END IONS" {
-            if let (Some(name), Some(pmz)) = (raw_name.take(), precursor_mz.take())
-                && peaks.len() >= min_peaks
-            {
-                peaks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                spectra.push(ParsedSpectrum {
-                    raw_name: name,
-                    precursor_mz: pmz,
-                    peaks: std::mem::take(&mut peaks),
-                });
+            let raw_name = preferred_name(&name, &title, &compound_name);
+            match (raw_name, precursor_mz.take()) {
+                (None, _) => {
+                    stats.dropped_missing_name += 1;
+                }
+                (Some(_), None) => {
+                    stats.dropped_missing_precursor_mz += 1;
+                }
+                (Some(_), Some(_)) if peaks.len() < min_peaks => {
+                    stats.dropped_too_few_peaks += 1;
+                }
+                (Some(raw_name), Some(pmz)) => {
+                    peaks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                    spectra.push(ParsedSpectrum {
+                        raw_name,
+                        precursor_mz: pmz,
+                        peaks: std::mem::take(&mut peaks),
+                    });
+                    stats.accepted += 1;
+                }
             }
             in_ions = false;
         } else if in_ions {
@@ -47,7 +89,9 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> Vec<ParsedSpectrum> {
                 let key = key.trim().to_uppercase();
                 let val = val.trim();
                 match key.as_str() {
-                    "NAME" => raw_name = Some(val.to_string()),
+                    "NAME" => name = Some(val.to_string()),
+                    "TITLE" => title = Some(val.to_string()),
+                    "COMPOUND_NAME" => compound_name = Some(val.to_string()),
                     "PEPMASS" | "PRECURSOR_MZ" => {
                         if let Some(first) = val.split_whitespace().next()
                             && let Ok(mz) = first.parse::<f64>()
@@ -69,7 +113,7 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> Vec<ParsedSpectrum> {
         }
     }
 
-    spectra
+    ParseMgfResult { spectra, stats }
 }
 
 /// Sanitize a raw spectrum name to a valid snake_case identifier.
@@ -119,7 +163,7 @@ pub fn sanitize_name(raw_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_mgf, sanitize_name};
+    use super::{ParseStats, parse_mgf, sanitize_name};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -173,11 +217,11 @@ END IONS"
         .expect("failed to write temporary mgf fixture");
 
         let parsed = parse_mgf(file.path(), 5);
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].raw_name, "First");
-        assert_eq!(parsed[0].precursor_mz, 123.4);
+        assert_eq!(parsed.spectra.len(), 2);
+        assert_eq!(parsed.spectra[0].raw_name, "First");
+        assert_eq!(parsed.spectra[0].precursor_mz, 123.4);
         assert_eq!(
-            parsed[0].peaks,
+            parsed.spectra[0].peaks,
             vec![
                 (150.0, 10.0),
                 (170.0, 7.0),
@@ -187,10 +231,10 @@ END IONS"
             ]
         );
 
-        assert_eq!(parsed[1].raw_name, "Second");
-        assert_eq!(parsed[1].precursor_mz, 456.7);
+        assert_eq!(parsed.spectra[1].raw_name, "Second");
+        assert_eq!(parsed.spectra[1].precursor_mz, 456.7);
         assert_eq!(
-            parsed[1].peaks,
+            parsed.spectra[1].peaks,
             vec![
                 (110.0, 2.0),
                 (120.0, 3.0),
@@ -199,5 +243,77 @@ END IONS"
                 (150.0, 6.0)
             ]
         );
+        assert_eq!(
+            parsed.stats,
+            ParseStats {
+                ions_blocks: 4,
+                accepted: 2,
+                dropped_missing_name: 0,
+                dropped_missing_precursor_mz: 1,
+                dropped_too_few_peaks: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_mgf_uses_name_then_title_then_compound_name() {
+        let mut file = NamedTempFile::new().expect("failed to create temporary mgf file");
+        writeln!(
+            file,
+            "\
+BEGIN IONS
+TITLE=title_only
+PEPMASS=100
+10 1
+20 2
+30 3
+40 4
+50 5
+END IONS
+BEGIN IONS
+COMPOUND_NAME=compound_only
+PEPMASS=200
+10 1
+20 2
+30 3
+40 4
+50 5
+END IONS
+BEGIN IONS
+TITLE=preferred_title
+COMPOUND_NAME=ignored_compound
+PEPMASS=300
+10 1
+20 2
+30 3
+40 4
+50 5
+END IONS
+BEGIN IONS
+NAME=preferred_name
+TITLE=ignored_title
+COMPOUND_NAME=ignored_compound
+PEPMASS=400
+10 1
+20 2
+30 3
+40 4
+50 5
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let parsed = parse_mgf(file.path(), 5);
+        let names: Vec<&str> = parsed.spectra.iter().map(|s| s.raw_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "title_only",
+                "compound_only",
+                "preferred_title",
+                "preferred_name"
+            ]
+        );
+        assert_eq!(parsed.stats.accepted, 4);
     }
 }

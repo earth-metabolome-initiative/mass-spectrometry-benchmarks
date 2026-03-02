@@ -154,13 +154,24 @@ pub fn run_with_sources_with_progress(
         );
 
         let parsed = parse_mgf(mgf_path, MIN_PEAKS);
-        let parsed_count = parsed.len();
+        if parsed.stats.accepted == 0 {
+            panic!(
+                "present source {source_label} ({}) produced zero parseable spectra; blocks={}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}",
+                mgf_path.display(),
+                parsed.stats.ions_blocks,
+                parsed.stats.dropped_missing_name,
+                parsed.stats.dropped_missing_precursor_mz,
+                parsed.stats.dropped_too_few_peaks,
+            );
+        }
+
+        let parsed_count = parsed.spectra.len();
         let mut skipped_hash_duplicates = 0usize;
         let mut inserted_source = 0usize;
         let mut stopped_due_to_max = false;
         let mut batch: Vec<NewSpectrum> = Vec::new();
 
-        for spec in parsed {
+        for spec in parsed.spectra {
             if let Some(remaining) = remaining_budget
                 && remaining == 0
             {
@@ -214,7 +225,11 @@ pub fn run_with_sources_with_progress(
         emit(
             &mut progress,
             &format!(
-                "[prepare] {source_label}: parsed={parsed_count}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}"
+                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
+                parsed.stats.ions_blocks,
+                parsed.stats.dropped_missing_name,
+                parsed.stats.dropped_missing_precursor_mz,
+                parsed.stats.dropped_too_few_peaks,
             ),
         );
 
@@ -238,7 +253,9 @@ mod tests {
     use super::*;
     use diesel::sql_query;
     use std::collections::HashSet;
+    use std::io::Write;
     use std::path::{Path, PathBuf};
+    use tempfile::NamedTempFile;
 
     fn setup_in_memory_connection() -> SqliteConnection {
         let mut conn = SqliteConnection::establish(":memory:")
@@ -267,7 +284,7 @@ mod tests {
         let mut unique = Vec::new();
         let mut seen = HashSet::new();
 
-        for spec in parse_mgf(fixture.as_path(), MIN_PEAKS) {
+        for spec in parse_mgf(fixture.as_path(), MIN_PEAKS).spectra {
             let hash = compute_spectrum_hash(spec.precursor_mz, &spec.peaks);
             if !seen.insert(hash.clone()) {
                 continue;
@@ -369,5 +386,59 @@ mod tests {
 
         assert_eq!(h1, h2);
         assert_ne!(h1, h3);
+    }
+
+    #[test]
+    fn accepts_title_only_sources() {
+        let mut conn = setup_in_memory_connection();
+        let mut fixture = NamedTempFile::new().expect("failed to create temporary mgf fixture");
+        writeln!(
+            fixture,
+            "\
+BEGIN IONS
+TITLE=Title Based Spectrum
+PEPMASS=123.4
+10 1
+20 2
+30 3
+40 4
+50 5
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let sources: [(&Path, &str); 1] = [(fixture.path(), "title-only.mgf")];
+        run_with_sources(&mut conn, None, &sources);
+
+        let rows: Vec<(String, String)> = spectra::table
+            .select((spectra::raw_name, spectra::source_file))
+            .load(&mut conn)
+            .expect("failed to query inserted rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "Title Based Spectrum");
+        assert_eq!(rows[0].1, "title-only.mgf");
+    }
+
+    #[test]
+    #[should_panic(expected = "produced zero parseable spectra")]
+    fn panics_when_present_source_has_no_parseable_spectra() {
+        let mut conn = setup_in_memory_connection();
+        let mut fixture = NamedTempFile::new().expect("failed to create temporary mgf fixture");
+        writeln!(
+            fixture,
+            "\
+BEGIN IONS
+PEPMASS=123.4
+10 1
+20 2
+30 3
+40 4
+50 5
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let sources: [(&Path, &str); 1] = [(fixture.path(), "broken.mgf")];
+        run_with_sources(&mut conn, None, &sources);
     }
 }
