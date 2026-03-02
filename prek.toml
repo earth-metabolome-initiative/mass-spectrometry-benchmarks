@@ -1,0 +1,109 @@
+minimum_prek_version = "0.3.0"
+
+[[repos]]
+repo = "builtin"
+
+[[repos.hooks]]
+id = "check-merge-conflict"
+
+[[repos.hooks]]
+id = "trailing-whitespace"
+files = { glob = "spectral-cosine-similarity/**" }
+exclude = { glob = [
+  "spectral-cosine-similarity/fixtures/**",
+  "spectral-cosine-similarity/output/**",
+  "spectral-cosine-similarity/target/**",
+] }
+
+[[repos.hooks]]
+id = "end-of-file-fixer"
+files = { glob = "spectral-cosine-similarity/**" }
+exclude = { glob = [
+  "spectral-cosine-similarity/fixtures/**",
+  "spectral-cosine-similarity/output/**",
+  "spectral-cosine-similarity/target/**",
+] }
+
+[[repos]]
+repo = "meta"
+hooks = [
+  { id = "check-hooks-apply" },
+  { id = "check-useless-excludes" },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "rust-fmt-check"
+name = "rust fmt check"
+entry = "bash -lc \"cd spectral-cosine-similarity && cargo fmt --all -- --check\""
+language = "system"
+pass_filenames = false
+stages = ["pre-commit"]
+priority = 10
+files = { glob = [
+  "spectral-cosine-similarity/src/**/*.rs",
+  "spectral-cosine-similarity/tests/**/*.rs",
+  "spectral-cosine-similarity/Cargo.toml",
+  "spectral-cosine-similarity/Cargo.lock",
+] }
+
+[[repos.hooks]]
+id = "rust-check"
+name = "rust check"
+entry = "bash -lc \"cd spectral-cosine-similarity && cargo check --locked\""
+language = "system"
+pass_filenames = false
+stages = ["pre-commit"]
+priority = 20
+files = { glob = [
+  "spectral-cosine-similarity/src/**/*.rs",
+  "spectral-cosine-similarity/tests/**/*.rs",
+  "spectral-cosine-similarity/Cargo.toml",
+  "spectral-cosine-similarity/Cargo.lock",
+] }
+
+[[repos.hooks]]
+id = "python-compileall"
+name = "python compileall"
+entry = "bash -lc \"cd spectral-cosine-similarity && python3 -m compileall -q scripts\""
+language = "system"
+pass_filenames = false
+stages = ["pre-commit"]
+priority = 20
+files = { glob = [
+  "spectral-cosine-similarity/scripts/**/*.py",
+  "spectral-cosine-similarity/pyproject.toml",
+  "spectral-cosine-similarity/uv.lock",
+] }
+
+[[repos.hooks]]
+id = "rust-clippy-strict"
+name = "rust clippy strict"
+entry = "bash -lc \"cd spectral-cosine-similarity && cargo clippy --all-targets -- -D warnings\""
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]
+priority = 10
+files = { glob = [
+  "spectral-cosine-similarity/src/**/*.rs",
+  "spectral-cosine-similarity/tests/**/*.rs",
+  "spectral-cosine-similarity/Cargo.toml",
+  "spectral-cosine-similarity/Cargo.lock",
+] }
+
+[[repos.hooks]]
+id = "rust-test-no-run"
+name = "rust test no-run"
+entry = "bash -lc \"cd spectral-cosine-similarity && cargo test --no-run --locked\""
+language = "system"
+pass_filenames = false
+stages = ["pre-push"]
+priority = 20
+files = { glob = [
+  "spectral-cosine-similarity/src/**/*.rs",
+  "spectral-cosine-similarity/tests/**/*.rs",
+  "spectral-cosine-similarity/Cargo.toml",
+  "spectral-cosine-similarity/Cargo.lock",
+] }
