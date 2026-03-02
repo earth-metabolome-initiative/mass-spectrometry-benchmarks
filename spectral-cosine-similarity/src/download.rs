@@ -1,8 +1,10 @@
 use md5::Md5;
+use reqwest::StatusCode;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::progress::StageProgress;
@@ -13,6 +15,13 @@ pub const DATASET_FILENAME: &str = "ALL_GNPS_cleaned.mgf";
 const DATASET_PART_PATH: &str = "fixtures/ALL_GNPS_cleaned.mgf.part";
 const BYTES_PER_MIB: f64 = 1_048_576.0;
 const DOWNLOAD_BAR_WIDTH: usize = 24;
+const DOWNLOAD_USER_AGENT: &str = "spectral-cosine-similarity/0.1 (+https://github.com/earth-metabolome-initiative/mass-spectrometry-benchmarks)";
+const MAX_DOWNLOAD_ATTEMPTS_PER_URL: usize = 3;
+
+const ZENODO_API_URL: &str =
+    "https://zenodo.org/api/records/11193898/files/ALL_GNPS_cleaned.mgf/content";
+const ZENODO_DIRECT_URL: &str =
+    "https://zenodo.org/records/11193898/files/ALL_GNPS_cleaned.mgf?download=1";
 
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,14 +42,14 @@ impl DigestKind {
 #[derive(Clone, Copy, Debug)]
 struct DownloadSource {
     name: &'static str,
-    url: &'static str,
+    urls: &'static [&'static str],
     expected_digest: &'static str,
     digest_kind: DigestKind,
 }
 
 const PINNED_SOURCE: DownloadSource = DownloadSource {
     name: "Zenodo record 11193898 / ALL_GNPS_cleaned.mgf",
-    url: "https://zenodo.org/api/records/11193898/files/ALL_GNPS_cleaned.mgf/content",
+    urls: &[ZENODO_API_URL, ZENODO_DIRECT_URL],
     expected_digest: "3382b7ec8843532256481820bb6e6c0c",
     digest_kind: DigestKind::Md5,
 };
@@ -124,6 +133,71 @@ fn format_download_progress(downloaded: u64, total_bytes: Option<u64>) -> String
     }
 }
 
+fn should_retry_status(status: StatusCode) -> bool {
+    status == StatusCode::FORBIDDEN
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn download_with_fallback_urls(
+    client: &reqwest::blocking::Client,
+    source: &DownloadSource,
+    progress: &mut Option<&mut dyn StageProgress>,
+) -> (reqwest::blocking::Response, &'static str) {
+    let mut failures: Vec<String> = Vec::new();
+
+    for (url_index, &url) in source.urls.iter().enumerate() {
+        if url_index > 0 {
+            emit(
+                progress,
+                &format!("[download] Falling back to alternate URL: {url}"),
+            );
+        }
+
+        for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS_PER_URL {
+            if attempt > 1 {
+                emit(
+                    progress,
+                    &format!(
+                        "[download] Retry {attempt}/{MAX_DOWNLOAD_ATTEMPTS_PER_URL} for {url}"
+                    ),
+                );
+            }
+
+            match client.get(url).send() {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        return (response, url);
+                    }
+
+                    failures.push(format!("URL {url} attempt {attempt}: HTTP {status}"));
+
+                    if should_retry_status(status) && attempt < MAX_DOWNLOAD_ATTEMPTS_PER_URL {
+                        thread::sleep(Duration::from_secs(attempt as u64));
+                        continue;
+                    }
+                    break;
+                }
+                Err(err) => {
+                    failures.push(format!("URL {url} attempt {attempt}: {err}"));
+                    if attempt < MAX_DOWNLOAD_ATTEMPTS_PER_URL {
+                        thread::sleep(Duration::from_secs(attempt as u64));
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    let details = failures.join("\n  - ");
+    panic!(
+        "failed to download {} from all candidate URLs.\n  - {}",
+        source.name, details
+    );
+}
+
 /// Download the pinned benchmark MGF file with an atomic `.part` file and digest verification.
 pub fn run(allow_unverified_download: bool) {
     run_with_progress(allow_unverified_download, None);
@@ -199,28 +273,19 @@ pub fn run_with_progress(
     emit(
         &mut progress,
         &format!(
-            "[download] Downloading {} from {} to {}",
-            source.name, source.url, DATASET_PART_PATH
+            "[download] Downloading {} to {} (primary URL: {})",
+            source.name, DATASET_PART_PATH, source.urls[0]
         ),
     );
 
     let client = reqwest::blocking::Client::builder()
+        .user_agent(DOWNLOAD_USER_AGENT)
         .timeout(Duration::from_secs(600))
         .build()
         .expect("failed to build HTTP client");
 
-    let mut response = client
-        .get(source.url)
-        .send()
-        .unwrap_or_else(|e| panic!("failed to download {}: {e}", source.name));
-
-    if !response.status().is_success() {
-        panic!(
-            "failed to download {}: HTTP {}",
-            source.name,
-            response.status()
-        );
-    }
+    let (mut response, downloaded_from_url) =
+        download_with_fallback_urls(&client, &source, &mut progress);
 
     let mut part_file = File::create(part_path)
         .unwrap_or_else(|e| panic!("failed to create {}: {e}", DATASET_PART_PATH));
@@ -271,7 +336,7 @@ pub fn run_with_progress(
         panic!(
             "downloaded file digest mismatch for {}; source: {}\nexpected {}: {}\nactual {}: {}\nrefusing to continue in strict mode (use --allow-unverified-download to bypass verification)",
             DATASET_PART_PATH,
-            source.url,
+            downloaded_from_url,
             digest_kind,
             source.expected_digest,
             digest_kind,
@@ -287,7 +352,7 @@ pub fn run_with_progress(
     } else {
         eprintln!(
             "[download] Digest verified for {} ({}: {}, source: {})",
-            DATASET_PART_PATH, digest_kind, actual_digest, source.url
+            DATASET_PART_PATH, digest_kind, actual_digest, downloaded_from_url
         );
     }
 
@@ -361,7 +426,7 @@ mod tests {
 
         let matching_md5_source = DownloadSource {
             name: "test",
-            url: "https://example.test",
+            urls: &["https://example.test"],
             expected_digest: "900150983cd24fb0d6963f7d28e17f72",
             digest_kind: DigestKind::Md5,
         };
@@ -372,7 +437,7 @@ mod tests {
 
         let mismatching_sha_source = DownloadSource {
             name: "test",
-            url: "https://example.test",
+            urls: &["https://example.test"],
             expected_digest: "deadbeef",
             digest_kind: DigestKind::Sha256,
         };
