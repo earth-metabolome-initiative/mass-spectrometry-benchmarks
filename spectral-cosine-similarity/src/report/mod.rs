@@ -10,6 +10,10 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+use diesel::QueryableByName;
+use diesel::RunQueryDsl;
+use diesel::sql_query;
+use diesel::sql_types::BigInt;
 use diesel::sqlite::SqliteConnection;
 
 use crate::progress::StageProgress;
@@ -68,6 +72,12 @@ pub struct ReportArtifacts {
     pub markdown: PathBuf,
 }
 
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    n: i64,
+}
+
 fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
     if let Some(progress) = progress.as_deref_mut() {
         progress.set_substep(message);
@@ -82,6 +92,20 @@ fn remove_file_if_exists(path: &Path) {
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => panic!("failed to remove stale chart {}: {err}", path.display()),
     }
+}
+
+fn spectra_used_in_results_count(conn: &mut SqliteConnection) -> i64 {
+    sql_query(
+        "SELECT COUNT(*) AS n
+         FROM (
+             SELECT left_id AS spectrum_id FROM results
+             UNION
+             SELECT right_id AS spectrum_id FROM results
+         )",
+    )
+    .get_result::<CountRow>(conn)
+    .expect("failed to count spectra represented in results")
+    .n
 }
 
 #[cfg(test)]
@@ -138,6 +162,7 @@ pub fn generate(
 ) -> ReportArtifacts {
     emit(&mut progress, "[report] Generating charts");
     fs::create_dir_all(&cfg.output_dir).expect("failed to create output directory");
+    let spectra_used = spectra_used_in_results_count(conn);
 
     emit(&mut progress, "[report] Loading aggregated result data");
     let timing_rows = load_timing_aggregate_rows(conn);
@@ -157,6 +182,10 @@ pub fn generate(
         timing_chart = omit_empty_buckets(timing_chart);
         rmse_chart = omit_empty_buckets(rmse_chart);
     }
+
+    let run_scope = format!(" (Spectra used: {spectra_used})");
+    timing_chart.title.push_str(&run_scope);
+    rmse_chart.title.push_str(&run_scope);
 
     let timing_path = cfg.output_dir.join(&cfg.artifact_names.timing_svg);
     let timing_svg = render_chart_artifact(
@@ -846,6 +875,7 @@ mod tests {
         assert!(markdown.contains("# Benchmark Tables"));
         assert!(markdown.contains("## Timing by Peak Count"));
         assert!(markdown.contains("## RMSE vs Reference by Peak Count"));
+        assert!(markdown.contains("Spectra used: 0"));
         assert!(markdown.contains("_No data available._"));
     }
 }
