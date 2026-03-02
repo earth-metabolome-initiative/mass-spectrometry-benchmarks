@@ -130,12 +130,12 @@ fn run_pipeline(
 
     *stage_hint = Some("Compute");
     let compute_started = Instant::now();
-    let results_before = benchmark_results_count(conn);
+    let results_before = results_count(conn);
     {
         let mut stage = progress.start_stage("Compute", compute_units);
         compute::run_with_progress(conn, max_spectra, Some(&mut stage));
     }
-    let results_after = benchmark_results_count(conn);
+    let results_after = results_count(conn);
     notify_stage_completion(
         notifier,
         "Compute",
@@ -197,8 +197,8 @@ fn spectra_count(conn: &mut diesel::sqlite::SqliteConnection) -> i64 {
     query_count(conn, "SELECT COUNT(*) AS n FROM spectra")
 }
 
-fn benchmark_results_count(conn: &mut diesel::sqlite::SqliteConnection) -> i64 {
-    query_count(conn, "SELECT COUNT(*) AS n FROM benchmark_results")
+fn results_count(conn: &mut diesel::sqlite::SqliteConnection) -> i64 {
+    query_count(conn, "SELECT COUNT(*) AS n FROM results")
 }
 
 fn download_size_metric(path: &Path) -> Option<String> {
@@ -217,4 +217,22 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         return msg.clone();
     }
     "panic payload was not a string".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn stage_count_queries_match_schema_table_names() {
+        let temp_dir = TempDir::new().expect("failed to create temporary test directory");
+        let db_path = temp_dir.path().join("benchmark.db");
+        let mut conn = db::establish_connection_at(&db_path);
+        db::initialize(&mut conn);
+
+        assert_eq!(experiment_count(&mut conn), 4);
+        assert_eq!(spectra_count(&mut conn), 0);
+        assert_eq!(results_count(&mut conn), 0);
+    }
 }
