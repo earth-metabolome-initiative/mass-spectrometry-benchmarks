@@ -98,7 +98,7 @@ fn run_pipeline(
         let mut stage = progress.start_stage("Download", FIXED_STAGE_UNITS);
         download::run_with_progress(allow_unverified_download, Some(&mut stage));
     }
-    let download_metric = download_size_metric(Path::new("fixtures/GNPS-LIBRARY.mgf"));
+    let download_metric = download_size_metric(Path::new(download::DATASET_PATH));
     notify_stage_completion(
         notifier,
         "Download",

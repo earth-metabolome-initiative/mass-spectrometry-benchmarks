@@ -17,6 +17,7 @@ indicatif = "0.17"
 clap = { version = "4", features = ["derive"] }
 plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series"] }
 sha2 = "0.10"
+md-5 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"

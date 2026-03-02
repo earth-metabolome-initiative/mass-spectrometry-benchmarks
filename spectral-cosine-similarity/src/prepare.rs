@@ -52,8 +52,11 @@ fn compute_spectrum_hash(precursor_mz: f64, peaks: &[(f64, f64)]) -> String {
 /// MGF files to process, in order.
 fn mgf_sources() -> Vec<(&'static str, &'static str)> {
     let mut sources = vec![("fixtures/pesticides.mgf", "pesticides.mgf")];
-    if Path::new("fixtures/GNPS-LIBRARY.mgf").exists() {
-        sources.push(("fixtures/GNPS-LIBRARY.mgf", "GNPS-LIBRARY.mgf"));
+    if Path::new(crate::download::DATASET_PATH).exists() {
+        sources.push((
+            crate::download::DATASET_PATH,
+            crate::download::DATASET_FILENAME,
+        ));
     }
     sources
 }
