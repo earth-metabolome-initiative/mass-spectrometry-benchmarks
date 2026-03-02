@@ -199,15 +199,12 @@ fn download_with_fallback_urls(
 }
 
 /// Download the pinned benchmark MGF file with an atomic `.part` file and digest verification.
-pub fn run(allow_unverified_download: bool) {
-    run_with_progress(allow_unverified_download, None);
+pub fn run() {
+    run_with_progress(None);
 }
 
 /// Download the pinned benchmark MGF file with optional progress updates.
-pub fn run_with_progress(
-    allow_unverified_download: bool,
-    mut progress: Option<&mut dyn StageProgress>,
-) {
+pub fn run_with_progress(mut progress: Option<&mut dyn StageProgress>) {
     let source = PINNED_SOURCE;
     let final_path = Path::new(DATASET_PATH);
     let part_path = Path::new(DATASET_PART_PATH);
@@ -255,13 +252,6 @@ pub fn run_with_progress(
                 });
             }
             Err(e) => {
-                if allow_unverified_download {
-                    eprintln!(
-                        "[download] WARNING: failed to verify existing {} {} digest ({e}); proceeding without verification",
-                        DATASET_PATH, digest_kind
-                    );
-                    return;
-                }
                 panic!(
                     "failed to verify existing {} {} digest: {e}",
                     DATASET_PATH, digest_kind
@@ -331,10 +321,10 @@ pub fn run_with_progress(
             digest_kind, DATASET_PART_PATH
         )
     });
-    if !verified && !allow_unverified_download {
+    if !verified {
         let _ = std::fs::remove_file(part_path);
         panic!(
-            "downloaded file digest mismatch for {}; source: {}\nexpected {}: {}\nactual {}: {}\nrefusing to continue in strict mode (use --allow-unverified-download to bypass verification)",
+            "downloaded file digest mismatch for {}; source: {}\nexpected {}: {}\nactual {}: {}\nrefusing to continue",
             DATASET_PART_PATH,
             downloaded_from_url,
             digest_kind,
@@ -343,18 +333,10 @@ pub fn run_with_progress(
             actual_digest
         );
     }
-
-    if !verified {
-        eprintln!(
-            "[download] WARNING: digest mismatch for {} (expected {}: {}, actual {}: {}), keeping file because --allow-unverified-download was set",
-            DATASET_PART_PATH, digest_kind, source.expected_digest, digest_kind, actual_digest
-        );
-    } else {
-        eprintln!(
-            "[download] Digest verified for {} ({}: {}, source: {})",
-            DATASET_PART_PATH, digest_kind, actual_digest, downloaded_from_url
-        );
-    }
+    eprintln!(
+        "[download] Digest verified for {} ({}: {}, source: {})",
+        DATASET_PART_PATH, digest_kind, actual_digest, downloaded_from_url
+    );
 
     std::fs::rename(part_path, final_path).unwrap_or_else(|e| {
         panic!(

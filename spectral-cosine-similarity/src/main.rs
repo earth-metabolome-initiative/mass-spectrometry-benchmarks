@@ -20,10 +20,6 @@ struct Cli {
     #[arg(long)]
     max_spectra: Option<usize>,
 
-    /// Continue download flow even if checksum verification fails.
-    #[arg(long)]
-    allow_unverified_download: bool,
-
     /// Enable ntfy notifications for section completion/failure/final completion.
     #[arg(long)]
     ntfy: bool,
@@ -47,7 +43,6 @@ fn main() {
     let run_result = panic::catch_unwind(AssertUnwindSafe(|| {
         run_pipeline(
             cli.max_spectra,
-            cli.allow_unverified_download,
             &mut notifier,
             &mut stage_hint,
             pipeline_started,
@@ -68,7 +63,6 @@ fn main() {
 
 fn run_pipeline(
     max_spectra: Option<usize>,
-    allow_unverified_download: bool,
     notifier: &mut Option<NtfyNotifier>,
     stage_hint: &mut Option<&'static str>,
     pipeline_started: Instant,
@@ -100,7 +94,7 @@ fn run_pipeline(
     let download_started = Instant::now();
     {
         let mut stage = progress.start_stage("Download", FIXED_STAGE_UNITS);
-        download::run_with_progress(allow_unverified_download, Some(&mut stage));
+        download::run_with_progress(Some(&mut stage));
     }
     let download_metric = download_size_metric(Path::new(download::DATASET_PATH));
     notify_stage_completion(
