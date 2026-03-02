@@ -27,9 +27,6 @@ target
 # Downloaded MGF files
 **/GNPS-LIBRARY.mgf
 
-# Chart output
-output/
-
 # Python
 __pycache__/
 .venv/
