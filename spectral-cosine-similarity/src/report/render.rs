@@ -261,7 +261,7 @@ where
                 .light_line_style(BLACK.mix(0.15))
                 .x_labels(n_buckets)
                 .x_label_formatter(&x_label_fmt)
-                .x_desc("Number of peaks")
+                .x_desc("Min number of peaks")
                 .y_desc(&chart.y_label)
                 .y_label_formatter(&|v| format!("{v:.0e}"))
                 .draw()?;
@@ -280,7 +280,7 @@ where
                 .disable_x_mesh()
                 .x_labels(n_buckets)
                 .x_label_formatter(&x_label_fmt)
-                .x_desc("Number of peaks")
+                .x_desc("Min number of peaks")
                 .y_desc(&chart.y_label)
                 .y_label_formatter(&|v| format!("{v:.1e}"))
                 .draw()?;

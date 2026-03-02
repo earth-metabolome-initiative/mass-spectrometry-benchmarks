@@ -36,14 +36,14 @@ impl MetricKind {
 }
 
 #[cfg(test)]
-pub(crate) fn bucket_index(max_peaks: i32) -> Option<usize> {
-    if max_peaks < BUCKET_BOUNDARIES[0] {
+pub(crate) fn bucket_index(pair_peaks: i32) -> Option<usize> {
+    if pair_peaks < BUCKET_BOUNDARIES[0] {
         return None;
     }
 
     (0..BUCKET_BOUNDARIES.len())
         .rev()
-        .find(|&i| max_peaks >= BUCKET_BOUNDARIES[i])
+        .find(|&i| pair_peaks >= BUCKET_BOUNDARIES[i])
 }
 
 pub(crate) fn bucket_labels() -> Vec<String> {
@@ -119,7 +119,7 @@ where
         if let (Some(&lp), Some(&rp)) = (
             spectra_peaks.get(&row.left_id),
             spectra_peaks.get(&row.right_id),
-        ) && let Some(bucket_idx) = bucket_index(lp.max(rp))
+        ) && let Some(bucket_idx) = bucket_index(lp.min(rp))
         {
             grouped
                 .entry((

@@ -44,16 +44,16 @@ fn bucketed_rows_cte_sql() -> &'static str {
                 vt.canonical_reference_implementation_id,
                 vt.canonical_reference_library_name,
                 CASE
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 2048 THEN 9
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 1024 THEN 8
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 513 THEN 7
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 257 THEN 6
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 129 THEN 5
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 65 THEN 4
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 33 THEN 3
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 17 THEN 2
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 9 THEN 1
-                    WHEN CASE WHEN sl.num_peaks > sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 5 THEN 0
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 2048 THEN 9
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 1024 THEN 8
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 513 THEN 7
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 257 THEN 6
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 129 THEN 5
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 65 THEN 4
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 33 THEN 3
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 17 THEN 2
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 9 THEN 1
+                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 5 THEN 0
                     ELSE -1
                 END AS bucket_index
          FROM results r
