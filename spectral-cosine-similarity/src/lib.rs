@@ -4,6 +4,7 @@ pub mod db;
 pub mod download;
 pub mod mgf_parser;
 pub mod models;
+pub mod ntfy;
 pub mod pair_selection;
 pub mod peaks;
 pub mod prepare;
