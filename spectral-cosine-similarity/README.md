@@ -5,6 +5,12 @@
 
 Benchmark pipeline comparing cosine-similarity implementations for mass spectra.
 
+Dataset source for benchmark runs:
+
+- pinned snapshot: Zenodo record `11193898`, file `ALL_GNPS_cleaned.mgf`
+- local cache path: `fixtures/ALL_GNPS_cleaned.mgf`
+- strict digest verification is enabled by default; use `--allow-unverified-download` only when intentionally bypassing reproducibility checks
+
 ```bash
 cargo run --release -- --max-spectra 100
 ```
