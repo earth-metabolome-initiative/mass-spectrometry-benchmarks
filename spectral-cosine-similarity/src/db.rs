@@ -44,18 +44,34 @@ pub fn db_path(_max_spectra: Option<usize>) -> &'static str {
     DB_PATH
 }
 
+fn apply_sqlite_pragmas(conn: &mut SqliteConnection) {
+    sql_query("PRAGMA foreign_keys = ON")
+        .execute(conn)
+        .expect("failed to enable PRAGMA foreign_keys");
+    sql_query("PRAGMA ignore_check_constraints = OFF")
+        .execute(conn)
+        .expect("failed to set PRAGMA ignore_check_constraints");
+}
+
 pub fn establish_connection(max_spectra: Option<usize>) -> SqliteConnection {
     let path = db_path(max_spectra);
-    SqliteConnection::establish(path).unwrap_or_else(|e| panic!("Error connecting to {path}: {e}"))
+    let mut conn = SqliteConnection::establish(path)
+        .unwrap_or_else(|e| panic!("Error connecting to {path}: {e}"));
+    apply_sqlite_pragmas(&mut conn);
+    conn
 }
 
 pub fn establish_connection_at(path: &Path) -> SqliteConnection {
     let path_str = path.to_string_lossy();
-    SqliteConnection::establish(path_str.as_ref())
-        .unwrap_or_else(|e| panic!("Error connecting to {}: {e}", path.display()))
+    let mut conn = SqliteConnection::establish(path_str.as_ref())
+        .unwrap_or_else(|e| panic!("Error connecting to {}: {e}", path.display()));
+    apply_sqlite_pragmas(&mut conn);
+    conn
 }
 
 pub fn initialize(conn: &mut SqliteConnection) {
+    apply_sqlite_pragmas(conn);
+
     // Run schema.sql (all CREATE IF NOT EXISTS, so idempotent)
     for statement in SCHEMA_SQL.split(';') {
         let trimmed = statement.trim();
@@ -526,7 +542,265 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn setup_in_memory_connection() -> SqliteConnection {
-        SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite connection")
+        let mut conn = SqliteConnection::establish(":memory:")
+            .expect("failed to open in-memory sqlite connection");
+        apply_sqlite_pragmas(&mut conn);
+        conn
+    }
+
+    fn seed_two_test_spectra(conn: &mut SqliteConnection) -> (i32, i32) {
+        sql_query(
+            "INSERT INTO spectra
+                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
+             VALUES
+                ('spec_left', 'spec_left', 'test.mgf', 'test_hash_left', 100.0, 2, '[[50.0, 0.5], [60.0, 0.5]]'),
+                ('spec_right', 'spec_right', 'test.mgf', 'test_hash_right', 200.0, 2, '[[70.0, 0.5], [80.0, 0.5]]')",
+        )
+        .execute(conn)
+        .expect("failed to seed test spectra");
+
+        let left_id = spectra::table
+            .filter(spectra::spectrum_hash.eq("test_hash_left"))
+            .select(spectra::id)
+            .first::<i32>(conn)
+            .expect("failed to load left test spectrum id");
+        let right_id = spectra::table
+            .filter(spectra::spectrum_hash.eq("test_hash_right"))
+            .select(spectra::id)
+            .first::<i32>(conn)
+            .expect("failed to load right test spectrum id");
+        (left_id, right_id)
+    }
+
+    fn first_experiment_id(conn: &mut SqliteConnection) -> i32 {
+        experiments::table
+            .order(experiments::id.asc())
+            .select(experiments::id)
+            .first::<i32>(conn)
+            .expect("failed to load first experiment id")
+    }
+
+    fn first_implementation_id(conn: &mut SqliteConnection) -> i32 {
+        implementations::table
+            .order(implementations::id.asc())
+            .select(implementations::id)
+            .first::<i32>(conn)
+            .expect("failed to load first implementation id")
+    }
+
+    #[test]
+    fn results_reject_invalid_foreign_keys_when_pragmas_enabled() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let bad_insert = diesel::insert_into(results::table)
+            .values(&NewResult {
+                left_id: 999_999,
+                right_id: 999_999,
+                experiment_id: first_experiment_id(&mut conn),
+                implementation_id: first_implementation_id(&mut conn),
+                score: 0.5,
+                matches: 0,
+                median_time_us: 1.0,
+            })
+            .execute(&mut conn);
+
+        assert!(
+            bad_insert.is_err(),
+            "foreign key violation should be rejected"
+        );
+    }
+
+    #[test]
+    fn results_enforce_pair_ordering_check() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
+
+        let bad_insert = diesel::insert_into(results::table)
+            .values(&NewResult {
+                left_id: right_id,
+                right_id: left_id,
+                experiment_id: first_experiment_id(&mut conn),
+                implementation_id: first_implementation_id(&mut conn),
+                score: 0.5,
+                matches: 0,
+                median_time_us: 1.0,
+            })
+            .execute(&mut conn);
+
+        assert!(bad_insert.is_err(), "left_id > right_id must be rejected");
+    }
+
+    #[test]
+    fn results_enforce_score_bounds() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
+        let experiment_ids: Vec<i32> = experiments::table
+            .order(experiments::id.asc())
+            .select(experiments::id)
+            .limit(2)
+            .load(&mut conn)
+            .expect("failed to load experiment ids");
+        assert_eq!(experiment_ids.len(), 2, "expected at least two experiments");
+        let implementation_id = first_implementation_id(&mut conn);
+
+        let above_one = diesel::insert_into(results::table)
+            .values(&NewResult {
+                left_id,
+                right_id,
+                experiment_id: experiment_ids[0],
+                implementation_id,
+                score: 1.1,
+                matches: 0,
+                median_time_us: 1.0,
+            })
+            .execute(&mut conn);
+        assert!(above_one.is_err(), "score > 1.000001 must be rejected");
+
+        let below_zero = diesel::insert_into(results::table)
+            .values(&NewResult {
+                left_id,
+                right_id,
+                experiment_id: experiment_ids[1],
+                implementation_id,
+                score: -0.0001,
+                matches: 0,
+                median_time_us: 1.0,
+            })
+            .execute(&mut conn);
+        assert!(below_zero.is_err(), "score < 0 must be rejected");
+    }
+
+    #[test]
+    fn results_allow_entropy_matches_sentinel_and_reject_lower_values() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
+        let implementation_id = first_implementation_id(&mut conn);
+        let experiment_ids: Vec<i32> = experiments::table
+            .order(experiments::id.asc())
+            .select(experiments::id)
+            .limit(2)
+            .load(&mut conn)
+            .expect("failed to load experiment ids");
+        assert_eq!(experiment_ids.len(), 2, "expected at least two experiments");
+
+        let sentinel = diesel::insert_into(results::table)
+            .values(&NewResult {
+                left_id,
+                right_id,
+                experiment_id: experiment_ids[0],
+                implementation_id,
+                score: 0.5,
+                matches: -1,
+                median_time_us: 1.0,
+            })
+            .execute(&mut conn);
+        assert!(sentinel.is_ok(), "matches = -1 should be allowed");
+
+        let invalid = diesel::insert_into(results::table)
+            .values(&NewResult {
+                left_id,
+                right_id,
+                experiment_id: experiment_ids[1],
+                implementation_id,
+                score: 0.5,
+                matches: -2,
+                median_time_us: 1.0,
+            })
+            .execute(&mut conn);
+        assert!(invalid.is_err(), "matches < -1 must be rejected");
+    }
+
+    #[test]
+    fn spectra_constraints_reject_absurd_rows() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let bad_num_peaks = sql_query(
+            "INSERT INTO spectra
+                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
+             VALUES
+                ('bad_num_peaks', 'bad_num_peaks', 'test.mgf', 'bad_hash_num_peaks', 100.0, 0, '[[50.0, 1.0]]')",
+        )
+        .execute(&mut conn);
+        assert!(bad_num_peaks.is_err(), "num_peaks <= 0 must be rejected");
+
+        let bad_precursor = sql_query(
+            "INSERT INTO spectra
+                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
+             VALUES
+                ('bad_precursor', 'bad_precursor', 'test.mgf', 'bad_hash_precursor', 0.0, 2, '[[50.0, 1.0]]')",
+        )
+        .execute(&mut conn);
+        assert!(bad_precursor.is_err(), "precursor_mz <= 0 must be rejected");
+
+        let bad_peaks_json = sql_query(
+            "INSERT INTO spectra
+                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
+             VALUES
+                ('bad_json', 'bad_json', 'test.mgf', 'bad_hash_json', 150.0, 2, 'not-json')",
+        )
+        .execute(&mut conn);
+        assert!(
+            bad_peaks_json.is_err(),
+            "invalid peaks JSON must be rejected"
+        );
+
+        let blank_name = sql_query(
+            "INSERT INTO spectra
+                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
+             VALUES
+                ('   ', 'blank', 'test.mgf', 'bad_hash_blank_name', 150.0, 2, '[[50.0, 1.0]]')",
+        )
+        .execute(&mut conn);
+        assert!(blank_name.is_err(), "blank spectrum name must be rejected");
+    }
+
+    #[test]
+    fn libraries_and_experiments_reject_invalid_values() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let bad_language = sql_query(
+            "INSERT INTO libraries (name, version, git_commit, git_url, language)
+             VALUES ('invalid-lib', '0.0.1', NULL, NULL, 'go')",
+        )
+        .execute(&mut conn);
+        assert!(
+            bad_language.is_err(),
+            "unsupported library language must be rejected"
+        );
+
+        let bad_experiment =
+            sql_query("INSERT INTO experiments (params) VALUES ('not-json')").execute(&mut conn);
+        assert!(
+            bad_experiment.is_err(),
+            "invalid experiment JSON must be rejected"
+        );
+    }
+
+    #[test]
+    fn algorithms_reject_self_approximation() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let algorithm_id = algorithms::table
+            .order(algorithms::id.asc())
+            .select(algorithms::id)
+            .first::<i32>(&mut conn)
+            .expect("failed to load an algorithm id");
+
+        let update = sql_query(format!(
+            "UPDATE algorithms SET approximates_algorithm_id = {algorithm_id} WHERE id = {algorithm_id}"
+        ))
+        .execute(&mut conn);
+        assert!(
+            update.is_err(),
+            "self-approximation should be rejected by CHECK"
+        );
     }
 
     #[test]
