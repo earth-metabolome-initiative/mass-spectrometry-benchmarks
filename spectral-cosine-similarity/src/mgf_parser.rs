@@ -17,6 +17,7 @@ pub struct ParseStats {
     pub dropped_missing_name: usize,
     pub dropped_missing_precursor_mz: usize,
     pub dropped_too_few_peaks: usize,
+    pub dropped_nonpositive_intensity_peaks: usize,
 }
 
 #[derive(Debug, Default)]
@@ -107,7 +108,11 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> ParseMgfResult {
                     && let (Ok(mz), Ok(intensity)) =
                         (parts[0].parse::<f64>(), parts[1].parse::<f64>())
                 {
-                    peaks.push((mz, intensity));
+                    if intensity > 0.0 {
+                        peaks.push((mz, intensity));
+                    } else {
+                        stats.dropped_nonpositive_intensity_peaks += 1;
+                    }
                 }
             }
         }
@@ -251,6 +256,7 @@ END IONS"
                 dropped_missing_name: 0,
                 dropped_missing_precursor_mz: 1,
                 dropped_too_few_peaks: 1,
+                dropped_nonpositive_intensity_peaks: 0,
             }
         );
     }
@@ -315,5 +321,57 @@ END IONS"
             ]
         );
         assert_eq!(parsed.stats.accepted, 4);
+    }
+
+    #[test]
+    fn parse_mgf_drops_nonpositive_intensity_peaks() {
+        let mut file = NamedTempFile::new().expect("failed to create temporary mgf file");
+        writeln!(
+            file,
+            "\
+BEGIN IONS
+NAME=DropBadIntensities
+PEPMASS=500
+100 10
+101 0
+102 -1
+103 5
+104 4
+105 3
+106 2
+END IONS
+BEGIN IONS
+NAME=AllBadIntensities
+PEPMASS=600
+200 0
+201 0
+202 -4
+203 -9
+204 -11
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let parsed = parse_mgf(file.path(), 5);
+        assert_eq!(parsed.spectra.len(), 1);
+        assert_eq!(parsed.spectra[0].raw_name, "DropBadIntensities");
+        assert_eq!(parsed.spectra[0].peaks.len(), 5);
+        assert!(
+            parsed.spectra[0]
+                .peaks
+                .iter()
+                .all(|(_, intensity)| *intensity > 0.0)
+        );
+        assert_eq!(
+            parsed.stats,
+            ParseStats {
+                ions_blocks: 2,
+                accepted: 1,
+                dropped_missing_name: 0,
+                dropped_missing_precursor_mz: 0,
+                dropped_too_few_peaks: 1,
+                dropped_nonpositive_intensity_peaks: 7,
+            }
+        );
     }
 }

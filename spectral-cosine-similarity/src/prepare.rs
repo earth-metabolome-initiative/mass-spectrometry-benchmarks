@@ -156,12 +156,13 @@ pub fn run_with_sources_with_progress(
         let parsed = parse_mgf(mgf_path, MIN_PEAKS);
         if parsed.stats.accepted == 0 {
             panic!(
-                "present source {source_label} ({}) produced zero parseable spectra; blocks={}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}",
+                "present source {source_label} ({}) produced zero parseable spectra; blocks={}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_nonpositive_intensity_peaks={}",
                 mgf_path.display(),
                 parsed.stats.ions_blocks,
                 parsed.stats.dropped_missing_name,
                 parsed.stats.dropped_missing_precursor_mz,
                 parsed.stats.dropped_too_few_peaks,
+                parsed.stats.dropped_nonpositive_intensity_peaks,
             );
         }
 
@@ -225,11 +226,12 @@ pub fn run_with_sources_with_progress(
         emit(
             &mut progress,
             &format!(
-                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
+                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_nonpositive_intensity_peaks={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
                 parsed.stats.ions_blocks,
                 parsed.stats.dropped_missing_name,
                 parsed.stats.dropped_missing_precursor_mz,
                 parsed.stats.dropped_too_few_peaks,
+                parsed.stats.dropped_nonpositive_intensity_peaks,
             ),
         );
 
@@ -440,5 +442,41 @@ END IONS"
 
         let sources: [(&Path, &str); 1] = [(fixture.path(), "broken.mgf")];
         run_with_sources(&mut conn, None, &sources);
+    }
+
+    #[test]
+    fn filters_nonpositive_intensities_before_inserting() {
+        let mut conn = setup_in_memory_connection();
+        let mut fixture = NamedTempFile::new().expect("failed to create temporary mgf fixture");
+        writeln!(
+            fixture,
+            "\
+BEGIN IONS
+TITLE=HasZeros
+PEPMASS=123.4
+10 1
+11 2
+12 0
+13 -5
+14 3
+15 4
+16 5
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let sources: [(&Path, &str); 1] = [(fixture.path(), "mixed-intensity.mgf")];
+        run_with_sources(&mut conn, None, &sources);
+
+        let row: (i32, String) = spectra::table
+            .select((spectra::num_peaks, spectra::peaks))
+            .first(&mut conn)
+            .expect("failed to fetch inserted spectrum");
+        assert_eq!(row.0, 5, "only positive intensities should be retained");
+
+        let parsed_peaks: Vec<(f64, f64)> =
+            serde_json::from_str(&row.1).expect("failed to parse stored peaks JSON");
+        assert_eq!(parsed_peaks.len(), 5);
+        assert!(parsed_peaks.iter().all(|(_, intensity)| *intensity > 0.0));
     }
 }
