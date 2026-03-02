@@ -131,7 +131,12 @@ fn run_pipeline(
     let results_before = results_count(conn);
     {
         let mut stage = progress.start_stage("Compute", compute_units);
-        compute::run_with_progress(conn, max_spectra, Some(&mut stage));
+        compute::run_with_progress_and_notifier(
+            conn,
+            max_spectra,
+            Some(&mut stage),
+            notifier.as_ref(),
+        );
     }
     let results_after = results_count(conn);
     notify_stage_completion(

@@ -14,6 +14,7 @@ use mass_spectrometry::prelude::*;
 use crate::benchmark_topology;
 use crate::db;
 use crate::models::*;
+use crate::ntfy::NtfyNotifier;
 use crate::pair_selection::generate_pairs;
 use crate::progress::StageProgress;
 
@@ -118,7 +119,22 @@ pub fn run_with_progress(
     max_spectra: Option<usize>,
     progress: Option<&mut dyn StageProgress>,
 ) {
-    run_with_matchms_and_progress(conn, max_spectra, run_matchms_default, progress);
+    run_with_progress_and_notifier(conn, max_spectra, progress, None);
+}
+
+pub fn run_with_progress_and_notifier(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    progress: Option<&mut dyn StageProgress>,
+    notifier: Option<&NtfyNotifier>,
+) {
+    run_with_matchms_and_progress_with_notifier(
+        conn,
+        max_spectra,
+        run_matchms_default,
+        progress,
+        notifier,
+    );
 }
 
 pub fn preflight_python_environment() {
@@ -167,18 +183,36 @@ pub fn run_with_matchms<F>(conn: &mut SqliteConnection, max_spectra: Option<usiz
 where
     F: Fn(Option<usize>),
 {
-    run_with_matchms_and_progress(conn, max_spectra, run_matchms, None);
+    run_with_matchms_and_progress_with_notifier(conn, max_spectra, run_matchms, None, None);
 }
 
 pub fn run_with_matchms_and_progress<F>(
     conn: &mut SqliteConnection,
     max_spectra: Option<usize>,
     run_matchms: F,
-    mut progress: Option<&mut dyn StageProgress>,
+    progress: Option<&mut dyn StageProgress>,
 ) where
     F: Fn(Option<usize>),
 {
-    compute_all(conn, max_spectra, &run_matchms, &mut progress);
+    run_with_matchms_and_progress_with_notifier(
+        conn,
+        max_spectra,
+        run_matchms,
+        progress,
+        None,
+    );
+}
+
+fn run_with_matchms_and_progress_with_notifier<F>(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    run_matchms: F,
+    mut progress: Option<&mut dyn StageProgress>,
+    notifier: Option<&NtfyNotifier>,
+) where
+    F: Fn(Option<usize>),
+{
+    compute_all(conn, max_spectra, &run_matchms, &mut progress, notifier);
     set_substep(&mut progress, "[compute] Building timing summary");
     print_timing_report(conn);
     clear_substep(&mut progress);
@@ -419,7 +453,8 @@ fn run_python_pass<F>(
     progress: &mut Option<&mut dyn StageProgress>,
     progress_bar: Option<&ProgressBar>,
     progress_label: &str,
-) where
+) -> u64
+where
     F: Fn(Option<usize>),
 {
     set_substep(progress, progress_label);
@@ -434,6 +469,7 @@ fn run_python_pass<F>(
     let after_python = count_python_results(conn, spectrum_ids_filter);
     let added_python_rows = after_python.saturating_sub(before_python);
     inc_progress(progress, added_python_rows as u64);
+    added_python_rows as u64
 }
 
 fn compute_rust_algorithm<B, S>(
@@ -683,6 +719,7 @@ fn compute_all<F>(
     max_spectra: Option<usize>,
     run_matchms: &F,
     progress: &mut Option<&mut dyn StageProgress>,
+    notifier: Option<&NtfyNotifier>,
 ) where
     F: Fn(Option<usize>),
 {
@@ -692,11 +729,21 @@ fn compute_all<F>(
     set_substep(progress, "[compute] Starting Rust algorithms");
 
     for spec in RUST_ALGO_SPECS {
-        compute_rust_algorithm_for_kind(conn, &context, spec, max_spectra, progress);
+        let step_started = Instant::now();
+        let rows_added =
+            compute_rust_algorithm_for_kind(conn, &context, spec, max_spectra, progress) as u64;
+        if let Some(notifier) = notifier {
+            notifier.notify_compute_step_completed(
+                &algorithm_cli_label(spec.algorithm_name, RUST_LIBRARY_NAME),
+                step_started.elapsed(),
+                rows_added,
+            );
+        }
     }
 
     // Final Python pass to catch any remaining work.
-    run_python_pass(
+    let python_started = Instant::now();
+    let rows_added = run_python_pass(
         conn,
         run_matchms,
         max_spectra,
@@ -705,6 +752,13 @@ fn compute_all<F>(
         None,
         "[compute] Final Python implementation pass",
     );
+    if let Some(notifier) = notifier {
+        notifier.notify_compute_step_completed(
+            "Python reference implementations",
+            python_started.elapsed(),
+            rows_added,
+        );
+    }
 }
 
 fn print_timing_report(conn: &mut SqliteConnection) {

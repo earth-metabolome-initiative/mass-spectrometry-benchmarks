@@ -60,6 +60,24 @@ impl NtfyNotifier {
         self.publish_best_effort(&payload);
     }
 
+    pub fn notify_compute_step_completed(&self, step: &str, elapsed: Duration, rows_added: u64) {
+        let payload = PublishPayload {
+            topic: self.topic.clone(),
+            title: NTFY_TITLE.to_string(),
+            message: [
+                format!("### Compute step complete: {step}"),
+                "- Status: success".to_string(),
+                format!("- Duration: {}", format_duration(elapsed)),
+                format!("- Rows added: {rows_added}"),
+            ]
+            .join("\n"),
+            tags: vec!["white_check_mark".to_string(), "gear".to_string()],
+            priority: 3,
+            markdown: true,
+        };
+        self.publish_best_effort(&payload);
+    }
+
     pub fn notify_pipeline_completed(&self, elapsed: Duration) {
         let payload = PublishPayload {
             topic: self.topic.clone(),
