@@ -22,7 +22,7 @@ use crate::progress::StageProgress;
 use aggregate::build_metric_chart;
 use aggregate::{MetricKind, build_metric_chart_from_aggregates, omit_empty_buckets};
 use data::{load_rmse_aggregate_rows, load_timing_aggregate_rows, series_pairs_from_aggregates};
-use markdown::write_markdown_tables;
+use markdown::{RunScopeMetadata, write_markdown_tables};
 use render::render_faceted_line_chart;
 use style::build_series_style_map_from_pairs;
 use types::FacetedLineChart;
@@ -52,6 +52,7 @@ pub struct ReportConfig {
     pub artifact_names: ArtifactNames,
     pub include_comparison: bool,
     pub prune_empty_buckets: bool,
+    pub requested_max_spectra: Option<usize>,
 }
 
 impl Default for ReportConfig {
@@ -61,6 +62,7 @@ impl Default for ReportConfig {
             artifact_names: ArtifactNames::default(),
             include_comparison: true,
             prune_empty_buckets: true,
+            requested_max_spectra: None,
         }
     }
 }
@@ -106,6 +108,13 @@ fn spectra_used_in_results_count(conn: &mut SqliteConnection) -> i64 {
     .get_result::<CountRow>(conn)
     .expect("failed to count spectra represented in results")
     .n
+}
+
+fn total_spectra_count(conn: &mut SqliteConnection) -> i64 {
+    sql_query("SELECT COUNT(*) AS n FROM spectra")
+        .get_result::<CountRow>(conn)
+        .expect("failed to count spectra")
+        .n
 }
 
 #[cfg(test)]
@@ -162,6 +171,7 @@ pub fn generate(
 ) -> ReportArtifacts {
     emit(&mut progress, "[report] Generating charts");
     fs::create_dir_all(&cfg.output_dir).expect("failed to create output directory");
+    let total_spectra = total_spectra_count(conn);
     let spectra_used = spectra_used_in_results_count(conn);
 
     emit(&mut progress, "[report] Loading aggregated result data");
@@ -204,7 +214,12 @@ pub fn generate(
     );
 
     let markdown_path = cfg.output_dir.join(&cfg.artifact_names.markdown);
-    write_markdown_tables(&markdown_path, &[&timing_chart, &rmse_chart]);
+    let run_scope = RunScopeMetadata {
+        requested_max_spectra: cfg.requested_max_spectra,
+        total_spectra_in_db: total_spectra,
+        spectra_used_in_results: spectra_used,
+    };
+    write_markdown_tables(&markdown_path, &[&timing_chart, &rmse_chart], &run_scope);
     emit(
         &mut progress,
         &format!("[report] Written {}", markdown_path.display()),
@@ -873,6 +888,10 @@ mod tests {
         );
         let markdown = fs::read_to_string(&markdown_path).expect("failed to read markdown report");
         assert!(markdown.contains("# Benchmark Tables"));
+        assert!(markdown.contains("## Run Scope"));
+        assert!(markdown.contains("Requested max spectra: `unbounded`"));
+        assert!(markdown.contains("Total spectra in DB: `0`"));
+        assert!(markdown.contains("Spectra used in results: `0`"));
         assert!(markdown.contains("## Timing by Peak Count"));
         assert!(markdown.contains("## RMSE vs Reference by Peak Count"));
         assert!(markdown.contains("Spectra used: 0"));

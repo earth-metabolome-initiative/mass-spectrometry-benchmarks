@@ -3,6 +3,29 @@ use std::path::Path;
 
 use super::types::FacetedLineChart;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunScopeMetadata {
+    pub requested_max_spectra: Option<usize>,
+    pub total_spectra_in_db: i64,
+    pub spectra_used_in_results: i64,
+}
+
+fn append_run_scope_markdown(markdown: &mut String, run_scope: &RunScopeMetadata) {
+    let requested = run_scope
+        .requested_max_spectra
+        .map_or_else(|| "unbounded".to_string(), |n| n.to_string());
+    markdown.push_str("## Run Scope\n\n");
+    markdown.push_str(&format!("- Requested max spectra: `{requested}`\n"));
+    markdown.push_str(&format!(
+        "- Total spectra in DB: `{}`\n",
+        run_scope.total_spectra_in_db
+    ));
+    markdown.push_str(&format!(
+        "- Spectra used in results: `{}`\n\n",
+        run_scope.spectra_used_in_results
+    ));
+}
+
 fn markdown_table_cell(value: f64, std_dev: f64, count: usize) -> String {
     if count == 0 {
         return "-".to_string();
@@ -55,8 +78,13 @@ fn append_chart_markdown(markdown: &mut String, chart: &FacetedLineChart) {
     }
 }
 
-pub(crate) fn write_markdown_tables(output_path: &Path, charts: &[&FacetedLineChart]) {
+pub(crate) fn write_markdown_tables(
+    output_path: &Path,
+    charts: &[&FacetedLineChart],
+    run_scope: &RunScopeMetadata,
+) {
     let mut markdown = String::from("# Benchmark Tables\n\n");
+    append_run_scope_markdown(&mut markdown, run_scope);
     for chart in charts {
         append_chart_markdown(&mut markdown, chart);
     }

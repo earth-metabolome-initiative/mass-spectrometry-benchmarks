@@ -152,7 +152,11 @@ fn run_pipeline(
     let artifact_count;
     {
         let mut stage = progress.start_stage("Report", FIXED_STAGE_UNITS);
-        let artifacts = report::generate(conn, &report::ReportConfig::default(), Some(&mut stage));
+        let report_cfg = report::ReportConfig {
+            requested_max_spectra: max_spectra,
+            ..report::ReportConfig::default()
+        };
+        let artifacts = report::generate(conn, &report_cfg, Some(&mut stage));
         artifact_count = usize::from(artifacts.timing_svg.is_some())
             + usize::from(artifacts.rmse_svg.is_some())
             + 1;
