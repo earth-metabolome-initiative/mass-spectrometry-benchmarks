@@ -5,7 +5,7 @@ pub(crate) const RMSE_LOG_FLOOR: f64 = 1e-16;
 #[cfg(test)]
 pub(crate) const MSE_LOG_FLOOR: f64 = RMSE_LOG_FLOOR;
 
-pub(crate) const LIBRARY_COLORS: [RGBColor; 10] = [
+pub(crate) const LIBRARY_COLORS: [RGBColor; 11] = [
     RGBColor(82, 154, 220),  // pastel blue
     RGBColor(238, 134, 62),  // pastel orange
     RGBColor(82, 182, 96),   // pastel green
@@ -16,6 +16,7 @@ pub(crate) const LIBRARY_COLORS: [RGBColor; 10] = [
     RGBColor(169, 148, 97),  // pastel khaki
     RGBColor(119, 130, 210), // pastel indigo
     RGBColor(145, 185, 102), // pastel lime
+    RGBColor(214, 169, 0),   // goldenrod (high contrast fallback replacement)
 ];
 
 #[cfg(test)]
