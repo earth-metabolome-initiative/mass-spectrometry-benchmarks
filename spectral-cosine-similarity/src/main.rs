@@ -73,6 +73,10 @@ fn run_pipeline(
     stage_hint: &mut Option<&'static str>,
     pipeline_started: Instant,
 ) {
+    *stage_hint = Some("Python preflight");
+    eprintln!("[preflight] Checking Python runtime (`uv`) and required packages");
+    compute::preflight_python_environment();
+
     let conn = &mut db::establish_connection(max_spectra);
     let total_units = NON_COMPUTE_STAGE_COUNT * FIXED_STAGE_UNITS;
     let mut progress = PipelineProgress::new(total_units);

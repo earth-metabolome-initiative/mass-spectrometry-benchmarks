@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hint::black_box;
+use std::process::{Command, Stdio};
 use std::result::Result as StdResult;
 use std::time::Instant;
 
@@ -120,6 +121,48 @@ pub fn run_with_progress(
     run_with_matchms_and_progress(conn, max_spectra, run_matchms_default, progress);
 }
 
+pub fn preflight_python_environment() {
+    let uv_check = Command::new("uv")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match uv_check {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            panic!(
+                "[preflight] `uv --version` exited with {status}. \
+Install `uv` and ensure it is available on PATH."
+            );
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            panic!(
+                "[preflight] `uv` is required but was not found on PATH. \
+Install `uv` (https://docs.astral.sh/uv/) and rerun."
+            );
+        }
+        Err(err) => {
+            panic!("[preflight] failed to run `uv --version`: {err}");
+        }
+    }
+
+    let import_check = Command::new("uv")
+        .args(["run", "python3", "-c", "import matchms, ms_entropy"])
+        .status();
+    match import_check {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            panic!(
+                "[preflight] Python dependency check failed with {status}. \
+Run `uv sync` in spectral-cosine-similarity/ and ensure both `matchms` and `ms_entropy` import successfully."
+            );
+        }
+        Err(err) => {
+            panic!("[preflight] failed to run python dependency check via `uv run`: {err}");
+        }
+    }
+}
+
 pub fn run_with_matchms<F>(conn: &mut SqliteConnection, max_spectra: Option<usize>, run_matchms: F)
 where
     F: Fn(Option<usize>),
@@ -156,15 +199,20 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
 
 fn run_matchms_default(max_spectra: Option<usize>) {
     let db = db::db_path(max_spectra);
-    let mut cmd = std::process::Command::new("uv");
-    cmd.args(["run", "python3", "scripts/python_reference_compute.py", db]);
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("scripts")
+        .join("python_reference_compute.py");
+    let mut cmd = Command::new("uv");
+    cmd.args(["run", "python3"]);
+    cmd.arg(&script);
+    cmd.arg(db);
     if let Some(max_spectra) = max_spectra {
         cmd.arg("--max-spectra");
         cmd.arg(max_spectra.to_string());
     }
     let status = cmd
         .status()
-        .expect("failed to run python_reference_compute.py");
+        .unwrap_or_else(|err| panic!("[compute] failed to launch `uv run python3`: {err}"));
 
     if !status.success() {
         panic!(
