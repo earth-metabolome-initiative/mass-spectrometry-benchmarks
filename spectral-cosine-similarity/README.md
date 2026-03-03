@@ -5,6 +5,13 @@
 
 Benchmark pipeline comparing cosine-similarity implementations for mass spectra.
 
+## IMPORTANT BENCHMARK SCOPE DISCLAIMER
+
+This benchmark currently does **not** apply spectral normalization or spectral sanitization workflows.
+
+- No denoising, windowed top-k filtering, precursor peak removal, or intensity normalization is performed.
+- Ingest filtering is currently limited to structural validity checks, removal of nonpositive-intensity peaks, and peak-count bounds (`min_peaks=5`, `max_peaks=1000`).
+
 Dataset source for benchmark runs:
 
 - pinned snapshot: Zenodo record `11193898`, file `ALL_GNPS_cleaned.mgf`
