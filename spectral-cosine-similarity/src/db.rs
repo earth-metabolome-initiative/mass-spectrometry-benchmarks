@@ -45,6 +45,9 @@ pub fn db_path(_max_spectra: Option<usize>) -> &'static str {
 }
 
 fn apply_sqlite_pragmas(conn: &mut SqliteConnection) {
+    sql_query("PRAGMA journal_mode = WAL")
+        .execute(conn)
+        .expect("failed to enable WAL journal mode");
     sql_query("PRAGMA foreign_keys = ON")
         .execute(conn)
         .expect("failed to enable PRAGMA foreign_keys");

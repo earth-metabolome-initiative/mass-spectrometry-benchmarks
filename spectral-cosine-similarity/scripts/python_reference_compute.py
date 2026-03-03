@@ -82,6 +82,7 @@ ALGORITHMS = [
 
 def main() -> None:
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode = WAL")
     try:
         cur = conn.cursor()
         experiments = db_io.load_experiments(cur)
