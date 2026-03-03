@@ -3,79 +3,130 @@
 [![CI](https://github.com/earth-metabolome-initiative/mass-spectrometry-benchmarks/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/earth-metabolome-initiative/mass-spectrometry-benchmarks/actions/workflows/ci.yml)
 [![Security audit](https://github.com/earth-metabolome-initiative/mass-spectrometry-benchmarks/actions/workflows/audit.yml/badge.svg?branch=main)](https://github.com/earth-metabolome-initiative/mass-spectrometry-benchmarks/actions/workflows/audit.yml)
 
-Benchmark pipeline comparing cosine-similarity implementations for mass spectra.
+Benchmark pipeline comparing spectral similarity implementations for mass spectra.
 
-## IMPORTANT BENCHMARK SCOPE DISCLAIMER
+## Overview and Main Findings
 
-This benchmark currently does **not** apply spectral normalization or spectral sanitization workflows.
+This report summarizes the current benchmark artifacts (`output/tables.md`, `output/timing.svg`, `output/rmse.svg`). Rust implementations are faster than the corresponding reference implementations in every evaluated family, with observed speedup factors from `1.746x` up to `16.059x` depending on algorithm and peak bucket. Numerical agreement is tight for cosine and entropy families relative to their canonical references, while modified greedy cosine remains visibly farther from exact modified cosine (RMSE up to `2.330e-3` in the largest bucket), so those two should not be treated as numerically interchangeable.
 
-- No denoising, windowed top-k filtering, precursor peak removal, or intensity normalization is performed.
-- Ingest filtering is currently limited to structural validity checks, removal of nonpositive-intensity peaks, dropping spectra with duplicate `m/z` entries, and peak-count bounds (`min_peaks=5`, `max_peaks=1000`).
+## Benchmark Setup and Scope
 
-## Benchmark Parameterization
+The benchmark uses `3000` spectra (`2924` from `ALL_GNPS_cleaned.mgf`, `76` from `pesticides.mgf`) with peak counts in `[5, 1000]` (`mean=206.861`). Pairing is unordered with self-pairs (`left_id <= right_id`), producing `4,501,500` spectrum pairs and `49,516,500` result rows across `11` implementations and `1` experiment configuration.
 
-This benchmark currently runs a **single** experiment configuration (one reference benchmark setup), using matchms default parameters:
+The experiment parameter set is:
 
 - `tolerance=0.01`
 - `mz_power=0.0`
 - `intensity_power=1.0`
+- `n_warmup=3`
+- `n_reps=10`
 
-## Current Plots (Preliminary)
+Each `(implementation, experiment)` is warmed up once on up to `100` representative pending pairs (repeated `n_warmup` times), then each result row stores the median over `n_reps` timed runs. Timing charts aggregate those row-level medians into bucket means. RMSE is computed per bucket against canonical references, with `RMSE_LOG_FLOOR=1e-16` for numerical floor stability in reporting.
 
-The plots below are generated from the current `output/` artifacts:
+Canonical references used for comparison are:
 
-- Timing: `output/timing.svg`
-- RMSE vs reference: `output/rmse.svg`
+- cosine family: `CosineHungarian (matchms)`
+- entropy weighted: `EntropySimilarityWeighted (ms_entropy)`
+- entropy unweighted: `EntropySimilarityUnweighted (ms_entropy)`
+- modified cosine family: `ModifiedCosine (mass-spectrometry-traits)`
+
+The reference stacks (`matchms`, `ms_entropy`) are Python-facing libraries but rely on compiled numerical backends (including LAPACK/BLAS-linked components in the SciPy stack), so this is not a Rust-vs-pure-Python-loop comparison.
+
+Runtime and machine context for this reported run:
+
+- full pipeline wall time: `3m56.769s` (`cargo run --release -- --max-spectra 3000`)
+- DB size after checkpoint and vacuum: `2,067,652,608` bytes (`~2.0 GiB`)
+- host: `Ubuntu 24.04.4 LTS`, kernel `6.17.0-14-generic`, `AMD Ryzen Threadripper PRO 5975WX` (`64` logical CPUs), `1.0 TiB` RAM, `Python 3.12.7`, `uv 0.9.30`, `rustc/cargo 1.95.0-nightly`
+
+In this setup, storage footprint is a stronger practical constraint than RAM demand.
+
+## Plots and Tables
 
 ![Timing by peak count](output/timing.svg)
 
 ![RMSE vs reference by peak count](output/rmse.svg)
 
-## Performance Notes (Preliminary)
+Raw numeric tables for all buckets/series are in [`output/tables.md`](output/tables.md).
 
-Current results are **preliminary** and should be treated as directional, not definitive.
+## Performance Findings
 
-- Rust implementations are consistently faster than the Python reference implementations across most peak-count buckets.
-- Greedy variants tend to be faster than exact/Hungarian-style variants, especially as peak counts increase.
-- Accuracy agreement is **not** uniformly tight across implementations.
-- Greedy approximations can show non-trivial RMSE deltas (including around `1e-3` in some settings), so implementations should not be treated as numerically interchangeable without checking the current RMSE outputs.
+Relative factor is computed bucket-wise as `reference_mean_time / rust_mean_time`.
 
-Observed acceleration ranges from the current run (`output/tables.md`, spectra used: `1000`):
+| Family | Rust vs reference implementation | Relative factor range across buckets |
+| --- | --- | --- |
+| CosineGreedy | `mass-spectrometry-traits` vs `matchms` | `1.919x` to `4.683x` |
+| CosineHungarian | `mass-spectrometry-traits` vs `matchms` | `4.151x` to `5.758x` |
+| ModifiedGreedyCosine | `mass-spectrometry-traits` vs `matchms` | `2.351x` to `6.625x` |
+| EntropySimilarityWeighted | `mass-spectrometry-traits` vs `ms_entropy` | `1.746x` to `6.089x` |
+| EntropySimilarityUnweighted | `mass-spectrometry-traits` vs `ms_entropy` | `2.998x` to `16.059x` |
 
-- `CosineGreedy` (Rust vs `matchms`): about `1.9x` to `3.2x` faster, depending on peak-count bucket.
-- `CosineHungarian` (Rust vs `matchms`): about `3.1x` to `8.4x` faster (`~3.1x` to `3.5x` in the denser buckets).
-- `ModifiedGreedyCosine` (Rust vs `matchms`): about `2.2x` to `4.0x` faster.
-- `EntropySimilarityWeighted` (Rust vs `ms_entropy`): about `1.8x` to `4.8x` faster.
-- `EntropySimilarityUnweighted` (Rust vs `ms_entropy`): about `2.3x` to `10.6x` faster.
+The `513-1023` bucket has much smaller support (`n=25,878`) than mid-range buckets, so edge-bucket swings should be interpreted with that sample-size gap in mind.
 
-Important caveats for interpreting these plots:
+## Accuracy Findings (RMSE vs Canonical Reference)
 
-- No spectral normalization/sanitization pipeline is applied yet.
-- Results are tied to one dataset slice (`max-spectra=1000`) and one parameterization.
-- Some edge buckets have small sample sizes (for example `n=36` for `513–1023`), which can amplify apparent speedup swings.
-- Absolute timings depend on hardware, runtime environment, and dependency versions.
+### Cosine family (reference: `CosineHungarian (matchms)`)
 
-Dataset source for benchmark runs:
+- `CosineHungarian (mass-spectrometry-traits)`: `1.000e-16` to `1.004e-16`
+- `CosineGreedy (mass-spectrometry-traits)`: `1.000e-16` to `7.697e-6`
+- `CosineGreedy (matchms)`: `1.000e-16` to `7.671e-6`
 
-- pinned snapshot: Zenodo record `11193898`, file `ALL_GNPS_cleaned.mgf`
+### Entropy family (reference: `ms_entropy`)
+
+- `EntropySimilarityUnweighted (mass-spectrometry-traits)`: `3.702e-9` to `6.235e-8`
+- `EntropySimilarityWeighted (mass-spectrometry-traits)`: `5.198e-9` to `7.348e-8`
+
+### Modified cosine family (reference: `ModifiedCosine (mass-spectrometry-traits)`)
+
+- `ModifiedGreedyCosine (mass-spectrometry-traits)`: `3.337e-5` to `2.330e-3`
+- `ModifiedGreedyCosine (matchms)`: `3.340e-5` to `2.330e-3`
+
+Pair counts per peak bucket (`output/tables.md`):
+
+- `5-8`: `390,222`
+- `9-16`: `611,943`
+- `17-32`: `853,185`
+- `33-64`: `1,018,040`
+- `65-128`: `658,582`
+- `129-256`: `514,947`
+- `257-512`: `428,703`
+- `513-1023`: `25,878`
+
+Cosine and entropy families remain near their references on this run, while modified greedy variants preserve a larger error band relative to exact modified cosine.
+
+## Methodological Limits and Improvement Priorities
+
+Current limits:
+
+- Only one experiment parameter set is benchmarked.
+- No denoising, windowed top-k filtering, precursor-peak removal, or intensity normalization is applied.
+- Ingest rejects spectra with missing metadata, out-of-bounds peak counts, duplicate `m/z`, and nonpositive-intensity peaks.
+- Timing is microbenchmark-style per pair; this is not end-to-end throughput/system benchmarking.
+- The DB schema has no run identifier table; results are cumulative for a DB state, not versioned as isolated benchmark runs.
+- There is no external-library exact `ModifiedCosine` implementation in the current comparison set.
+
+Priority improvements:
+
+1. Add a parameter grid (`tolerance`, `mz_power`, `intensity_power`) instead of a single configuration.
+2. Add optional preprocessing variants (normalization/sanitization pipeline switches) and report them as separate experiment sets.
+3. Add run provenance (`run_id`, timestamp, hardware/runtime metadata, git revisions) and produce run-scoped reports.
+4. Add distributional timing stats (for example p50/p95/p99 and tails), not only mean and standard deviation.
+5. Add an explicit external-reference baseline for exact modified cosine when available.
+
+## Reproducibility
+
+Pinned dataset source:
+
+- Zenodo record `11193898`, file `ALL_GNPS_cleaned.mgf`
 - local cache path: `fixtures/ALL_GNPS_cleaned.mgf`
 
+Run the pipeline for the same report scope:
+
 ```bash
-cargo run --release -- --max-spectra 100
+cargo run --release -- --max-spectra 3000
 ```
 
-Enable ntfy notifications (random topic per run):
+Run with ntfy notifications:
 
 ```bash
-cargo run --release -- --max-spectra 100 --ntfy
-```
-
-Pre-commit hooks (with `prek`):
-
-```bash
-uv tool install prek
-prek validate-config ../prek.toml
-prek install
-prek run --all-files
-prek auto-update
+cargo run --release -- --max-spectra 3000 --ntfy
 ```
