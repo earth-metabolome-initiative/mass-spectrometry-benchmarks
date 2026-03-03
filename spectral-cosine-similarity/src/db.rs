@@ -18,7 +18,7 @@ const MATCHMS_LIB_NAME: &str = "matchms";
 const MS_ENTROPY_LIB_NAME: &str = "ms_entropy";
 
 const N_WARMUP: u32 = 3;
-const N_REPS: u32 = 10;
+const N_REPS: u32 = 5;
 
 /// Parameter sets: (tolerance, mz_power, intensity_power)
 const PARAM_SETS: [(f64, f64, f64); 1] = [
