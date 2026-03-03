@@ -48,8 +48,7 @@ diesel::table! {
 }
 
 diesel::table! {
-    results (id) {
-        id -> Integer,
+    results (left_id, right_id, experiment_id, implementation_id) {
         left_id -> Integer,
         right_id -> Integer,
         experiment_id -> Integer,

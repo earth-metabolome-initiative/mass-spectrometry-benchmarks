@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS spectra (
 
 -- Results: similarity score + timing, one row per (pair, experiment, implementation)
 CREATE TABLE IF NOT EXISTS results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
     left_id INTEGER NOT NULL REFERENCES spectra(id),
     right_id INTEGER NOT NULL REFERENCES spectra(id),
     experiment_id INTEGER NOT NULL REFERENCES experiments(id),
@@ -64,16 +63,11 @@ CREATE TABLE IF NOT EXISTS results (
     matches INTEGER NOT NULL CHECK (matches >= -1),
     median_time_us REAL NOT NULL CHECK (median_time_us >= 0.0),
     CHECK (left_id <= right_id),
-    UNIQUE(left_id, right_id, experiment_id, implementation_id)
-) STRICT;
+    PRIMARY KEY (left_id, right_id, experiment_id, implementation_id)
+) STRICT, WITHOUT ROWID;
 
-CREATE INDEX IF NOT EXISTS idx_results_impl ON results(implementation_id);
-CREATE INDEX IF NOT EXISTS idx_results_left ON results(left_id);
-CREATE INDEX IF NOT EXISTS idx_results_right ON results(right_id);
 CREATE INDEX IF NOT EXISTS idx_results_impl_pair_exp
 ON results(implementation_id, left_id, right_id, experiment_id);
-CREATE INDEX IF NOT EXISTS idx_results_pair_exp_impl
-ON results(left_id, right_id, experiment_id, implementation_id);
 
 -- Canonical/reference topology derived from schema regularities.
 CREATE VIEW IF NOT EXISTS v_implementation_topology AS

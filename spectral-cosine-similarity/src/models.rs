@@ -133,7 +133,6 @@ pub struct NewSpectrum {
 #[derive(Queryable, Selectable, Debug)]
 #[diesel(table_name = results)]
 pub struct Result {
-    pub id: i32,
     pub left_id: i32,
     pub right_id: i32,
     pub experiment_id: i32,
