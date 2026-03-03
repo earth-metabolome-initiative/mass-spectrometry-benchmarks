@@ -10,7 +10,7 @@ Benchmark pipeline comparing cosine-similarity implementations for mass spectra.
 This benchmark currently does **not** apply spectral normalization or spectral sanitization workflows.
 
 - No denoising, windowed top-k filtering, precursor peak removal, or intensity normalization is performed.
-- Ingest filtering is currently limited to structural validity checks, removal of nonpositive-intensity peaks, and peak-count bounds (`min_peaks=5`, `max_peaks=1000`).
+- Ingest filtering is currently limited to structural validity checks, removal of nonpositive-intensity peaks, dropping spectra with duplicate `m/z` entries, and peak-count bounds (`min_peaks=5`, `max_peaks=1000`).
 
 ## Benchmark Parameterization
 
