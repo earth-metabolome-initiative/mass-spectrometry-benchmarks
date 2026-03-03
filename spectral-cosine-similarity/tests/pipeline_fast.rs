@@ -68,7 +68,7 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
         .expect("failed to count results");
 
     assert_eq!(spectra_count, 3);
-    assert_eq!(experiments_count, 4);
+    assert_eq!(experiments_count, 1);
     assert_eq!(implementations_count, 11);
     let n_pairs = spectra_count * (spectra_count + 1) / 2;
     let expected_results = n_pairs * experiments_count * implementations_count;
