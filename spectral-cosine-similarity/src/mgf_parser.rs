@@ -17,6 +17,7 @@ pub struct ParseStats {
     pub dropped_missing_name: usize,
     pub dropped_missing_precursor_mz: usize,
     pub dropped_too_few_peaks: usize,
+    pub dropped_too_many_peaks: usize,
     pub dropped_nonpositive_intensity_peaks: usize,
 }
 
@@ -36,8 +37,9 @@ fn preferred_name(
         .or_else(|| compound_name.clone())
 }
 
-/// Parse an MGF file and return all spectra with a preferred name, precursor_mz, and at least `min_peaks` peaks.
-pub fn parse_mgf(path: &Path, min_peaks: usize) -> ParseMgfResult {
+/// Parse an MGF file and return all spectra with a preferred name, precursor_mz,
+/// and a number of peaks within `[min_peaks, max_peaks]`.
+pub fn parse_mgf(path: &Path, min_peaks: usize, max_peaks: usize) -> ParseMgfResult {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {e}", path.display()));
     let reader = BufReader::new(file);
 
@@ -73,6 +75,9 @@ pub fn parse_mgf(path: &Path, min_peaks: usize) -> ParseMgfResult {
                 }
                 (Some(_), Some(_)) if peaks.len() < min_peaks => {
                     stats.dropped_too_few_peaks += 1;
+                }
+                (Some(_), Some(_)) if peaks.len() > max_peaks => {
+                    stats.dropped_too_many_peaks += 1;
                 }
                 (Some(raw_name), Some(pmz)) => {
                     peaks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -221,7 +226,7 @@ END IONS"
         )
         .expect("failed to write temporary mgf fixture");
 
-        let parsed = parse_mgf(file.path(), 5);
+        let parsed = parse_mgf(file.path(), 5, 1000);
         assert_eq!(parsed.spectra.len(), 2);
         assert_eq!(parsed.spectra[0].raw_name, "First");
         assert_eq!(parsed.spectra[0].precursor_mz, 123.4);
@@ -256,6 +261,7 @@ END IONS"
                 dropped_missing_name: 0,
                 dropped_missing_precursor_mz: 1,
                 dropped_too_few_peaks: 1,
+                dropped_too_many_peaks: 0,
                 dropped_nonpositive_intensity_peaks: 0,
             }
         );
@@ -309,7 +315,7 @@ END IONS"
         )
         .expect("failed to write temporary mgf fixture");
 
-        let parsed = parse_mgf(file.path(), 5);
+        let parsed = parse_mgf(file.path(), 5, 1000);
         let names: Vec<&str> = parsed.spectra.iter().map(|s| s.raw_name.as_str()).collect();
         assert_eq!(
             names,
@@ -352,7 +358,7 @@ END IONS"
         )
         .expect("failed to write temporary mgf fixture");
 
-        let parsed = parse_mgf(file.path(), 5);
+        let parsed = parse_mgf(file.path(), 5, 1000);
         assert_eq!(parsed.spectra.len(), 1);
         assert_eq!(parsed.spectra[0].raw_name, "DropBadIntensities");
         assert_eq!(parsed.spectra[0].peaks.len(), 5);
@@ -370,7 +376,56 @@ END IONS"
                 dropped_missing_name: 0,
                 dropped_missing_precursor_mz: 0,
                 dropped_too_few_peaks: 1,
+                dropped_too_many_peaks: 0,
                 dropped_nonpositive_intensity_peaks: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_mgf_drops_spectra_above_max_peak_count() {
+        let mut file = NamedTempFile::new().expect("failed to create temporary mgf file");
+        writeln!(
+            file,
+            "\
+BEGIN IONS
+NAME=AtLimit
+PEPMASS=700"
+        )
+        .expect("failed to write temporary mgf fixture");
+        for i in 0..1000 {
+            writeln!(file, "{} {}", 100.0 + i as f64 * 0.01, 1.0 + i as f64)
+                .expect("failed to write peak line");
+        }
+        writeln!(
+            file,
+            "\
+END IONS
+BEGIN IONS
+NAME=TooLarge
+PEPMASS=800"
+        )
+        .expect("failed to write temporary mgf fixture");
+        for i in 0..1001 {
+            writeln!(file, "{} {}", 200.0 + i as f64 * 0.01, 2.0 + i as f64)
+                .expect("failed to write peak line");
+        }
+        writeln!(file, "END IONS").expect("failed to write temporary mgf fixture");
+
+        let parsed = parse_mgf(file.path(), 5, 1000);
+        assert_eq!(parsed.spectra.len(), 1);
+        assert_eq!(parsed.spectra[0].raw_name, "AtLimit");
+        assert_eq!(parsed.spectra[0].peaks.len(), 1000);
+        assert_eq!(
+            parsed.stats,
+            ParseStats {
+                ions_blocks: 2,
+                accepted: 1,
+                dropped_missing_name: 0,
+                dropped_missing_precursor_mz: 0,
+                dropped_too_few_peaks: 0,
+                dropped_too_many_peaks: 1,
+                dropped_nonpositive_intensity_peaks: 0,
             }
         );
     }

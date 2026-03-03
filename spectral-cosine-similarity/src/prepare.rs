@@ -10,6 +10,7 @@ use crate::progress::StageProgress;
 use crate::schema::*;
 
 const MIN_PEAKS: usize = 5;
+const MAX_PEAKS: usize = 1000;
 const HASH_DECIMALS: usize = 6;
 
 fn canonicalize_component(value: f64) -> String {
@@ -153,15 +154,16 @@ pub fn run_with_sources_with_progress(
             &format!("[prepare] Parsing {}", mgf_path.display()),
         );
 
-        let parsed = parse_mgf(mgf_path, MIN_PEAKS);
+        let parsed = parse_mgf(mgf_path, MIN_PEAKS, MAX_PEAKS);
         if parsed.stats.accepted == 0 {
             panic!(
-                "present source {source_label} ({}) produced zero parseable spectra; blocks={}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_nonpositive_intensity_peaks={}",
+                "present source {source_label} ({}) produced zero parseable spectra; blocks={}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}",
                 mgf_path.display(),
                 parsed.stats.ions_blocks,
                 parsed.stats.dropped_missing_name,
                 parsed.stats.dropped_missing_precursor_mz,
                 parsed.stats.dropped_too_few_peaks,
+                parsed.stats.dropped_too_many_peaks,
                 parsed.stats.dropped_nonpositive_intensity_peaks,
             );
         }
@@ -226,11 +228,12 @@ pub fn run_with_sources_with_progress(
         emit(
             &mut progress,
             &format!(
-                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_nonpositive_intensity_peaks={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
+                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
                 parsed.stats.ions_blocks,
                 parsed.stats.dropped_missing_name,
                 parsed.stats.dropped_missing_precursor_mz,
                 parsed.stats.dropped_too_few_peaks,
+                parsed.stats.dropped_too_many_peaks,
                 parsed.stats.dropped_nonpositive_intensity_peaks,
             ),
         );
@@ -286,7 +289,7 @@ mod tests {
         let mut unique = Vec::new();
         let mut seen = HashSet::new();
 
-        for spec in parse_mgf(fixture.as_path(), MIN_PEAKS).spectra {
+        for spec in parse_mgf(fixture.as_path(), MIN_PEAKS, MAX_PEAKS).spectra {
             let hash = compute_spectrum_hash(spec.precursor_mz, &spec.peaks);
             if !seen.insert(hash.clone()) {
                 continue;
