@@ -22,7 +22,7 @@ const N_REPS: u32 = 10;
 
 /// Parameter sets: (tolerance, mz_power, intensity_power)
 const PARAM_SETS: [(f64, f64, f64); 1] = [
-    (0.1, 0.0, 1.0), // matchms defaults
+    (0.01, 0.0, 1.0), // single benchmark default
 ];
 
 #[derive(QueryableByName)]

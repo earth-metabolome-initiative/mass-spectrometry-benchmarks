@@ -16,7 +16,7 @@ This benchmark currently does **not** apply spectral normalization or spectral s
 
 This benchmark currently runs a **single** experiment configuration (one reference benchmark setup), using matchms default parameters:
 
-- `tolerance=0.1`
+- `tolerance=0.01`
 - `mz_power=0.0`
 - `intensity_power=1.0`
 
