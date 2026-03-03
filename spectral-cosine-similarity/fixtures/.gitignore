@@ -1,1 +1,3 @@
 benchmark.db-journal
+benchmark.db-shm
+benchmark.db-wal

@@ -22,6 +22,9 @@ target
 
 # Benchmark database
 **/benchmark.db
+**/benchmark.db-journal
+**/benchmark.db-shm
+**/benchmark.db-wal
 **/benchmark_smoke.db
 
 # Downloaded MGF files
