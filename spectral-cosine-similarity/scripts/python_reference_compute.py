@@ -7,6 +7,7 @@ pairs, and writes back to the results table.
 Usage:
   python_reference_compute.py <db_path> [max_spectra]
   python_reference_compute.py <db_path> --max-spectra <max_spectra>
+  python_reference_compute.py <db_path> --algorithm <algorithm_name>
 """
 
 from __future__ import annotations
@@ -23,9 +24,10 @@ from python_ref.algorithms import entropy_unweighted
 from python_ref.algorithms import entropy_weighted
 from python_ref.algorithms import modified_greedy_cosine
 
-def parse_cli_args(argv: list[str]) -> tuple[str, int | None]:
+def parse_cli_args(argv: list[str]) -> tuple[str, int | None, str | None]:
     db_path = argv[1] if len(argv) > 1 else "fixtures/benchmark.db"
     max_spectra: int | None = None
+    selected_algorithm: str | None = None
     extra_positional: list[str] = []
 
     i = 2
@@ -39,6 +41,16 @@ def parse_cli_args(argv: list[str]) -> tuple[str, int | None]:
             continue
         if token.startswith("--max-spectra="):
             max_spectra = int(token.split("=", 1)[1])
+            i += 1
+            continue
+        if token == "--algorithm":
+            if i + 1 >= len(argv):
+                raise SystemExit("missing value for --algorithm")
+            selected_algorithm = argv[i + 1]
+            i += 2
+            continue
+        if token.startswith("--algorithm="):
+            selected_algorithm = token.split("=", 1)[1]
             i += 1
             continue
         extra_positional.append(token)
@@ -66,10 +78,10 @@ def parse_cli_args(argv: list[str]) -> tuple[str, int | None]:
         elif len(extra_positional) > 1:
             raise SystemExit("too many positional arguments")
 
-    return db_path, max_spectra
+    return db_path, max_spectra, selected_algorithm
 
 
-DB_PATH, MAX_SPECTRA = parse_cli_args(sys.argv)
+DB_PATH, MAX_SPECTRA, SELECTED_ALGORITHM = parse_cli_args(sys.argv)
 
 ALGORITHMS = [
     ("CosineHungarian", "matchms", cosine_hungarian.compute_once),
@@ -78,6 +90,20 @@ ALGORITHMS = [
     ("EntropySimilarityWeighted", "ms_entropy", entropy_weighted.compute_once),
     ("EntropySimilarityUnweighted", "ms_entropy", entropy_unweighted.compute_once),
 ]
+
+
+def selected_algorithms(algorithm_name: str | None):
+    if algorithm_name is None:
+        return ALGORITHMS
+
+    selected = [entry for entry in ALGORITHMS if entry[0] == algorithm_name]
+    if selected:
+        return selected
+
+    valid = ", ".join(name for name, _, _ in ALGORITHMS)
+    raise SystemExit(
+        f"unknown --algorithm '{algorithm_name}'. Valid algorithms: {valid}"
+    )
 
 
 def main() -> None:
@@ -89,7 +115,9 @@ def main() -> None:
         spectra = db_io.load_spectra(cur, max_spectra=MAX_SPECTRA)
         id_pairs = workload.generate_pairs(list(spectra.keys()))
 
-        for algo_name, library_name, compute_once in ALGORITHMS:
+        for algo_name, library_name, compute_once in selected_algorithms(
+            SELECTED_ALGORITHM
+        ):
             impl_id = db_io.get_implementation_id(cur, algo_name, library_name)
             runner.run_algorithm(
                 conn=conn,
