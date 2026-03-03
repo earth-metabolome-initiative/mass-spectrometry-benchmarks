@@ -12,6 +12,14 @@ This benchmark currently does **not** apply spectral normalization or spectral s
 - No denoising, windowed top-k filtering, precursor peak removal, or intensity normalization is performed.
 - Ingest filtering is currently limited to structural validity checks, removal of nonpositive-intensity peaks, and peak-count bounds (`min_peaks=5`, `max_peaks=1000`).
 
+## Benchmark Parameterization
+
+This benchmark currently runs a **single** experiment configuration (one reference benchmark setup), using matchms default parameters:
+
+- `tolerance=0.1`
+- `mz_power=0.0`
+- `intensity_power=1.0`
+
 Dataset source for benchmark runs:
 
 - pinned snapshot: Zenodo record `11193898`, file `ALL_GNPS_cleaned.mgf`
