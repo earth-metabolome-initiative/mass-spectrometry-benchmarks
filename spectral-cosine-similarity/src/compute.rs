@@ -715,8 +715,7 @@ where
 
             if let Some(pb) = pb.as_ref() {
                 pb.inc(1);
-            } else if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL)
-            {
+            } else if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL) {
                 set_substep(
                     progress,
                     &format!("[compute] {algorithm_label}: {total_done}/{work_len}",),
