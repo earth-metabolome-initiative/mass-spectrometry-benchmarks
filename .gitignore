@@ -26,6 +26,7 @@ target
 **/benchmark.db-shm
 **/benchmark.db-wal
 **/benchmark_smoke.db
+**/benchmark.db.zst
 
 # Downloaded MGF files
 **/ALL_GNPS_cleaned.mgf
