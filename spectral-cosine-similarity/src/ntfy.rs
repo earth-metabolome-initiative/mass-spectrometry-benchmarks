@@ -29,7 +29,7 @@ struct PublishPayload {
 impl NtfyNotifier {
     pub fn new_random_topic() -> Self {
         Self {
-            topic: generate_uuid_v4(),
+            topic: generate_uuid_v7(),
             client: Client::new(),
         }
     }
@@ -177,10 +177,17 @@ fn truncate(input: &str, max_chars: usize) -> String {
     output
 }
 
-fn generate_uuid_v4() -> String {
+fn generate_uuid_v7() -> String {
     let mut bytes = [0_u8; 16];
     fill_random_bytes(&mut bytes).unwrap_or_else(|_| fill_fallback_bytes(&mut bytes));
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0_u64, |duration| duration.as_millis() as u64);
+    let ts = now_ms.to_be_bytes();
+    bytes[0..6].copy_from_slice(&ts[2..8]);
+
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
         "{:02x}{:02x}{:02x}{:02x}-\
@@ -247,7 +254,7 @@ mod tests {
             .expect("missing ntfy base URL");
         assert!(is_topic_safe(suffix));
         assert_eq!(suffix.len(), 36);
-        assert_eq!(&suffix[14..15], "4");
+        assert_eq!(&suffix[14..15], "7");
     }
 
     #[test]
