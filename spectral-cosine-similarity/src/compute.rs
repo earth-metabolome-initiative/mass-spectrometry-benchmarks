@@ -20,6 +20,7 @@ use crate::progress::StageProgress;
 
 const FLUSH_BATCH: usize = 500;
 const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
+const GLOBAL_WARMUP_PAIR_SAMPLE: usize = 100;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -583,17 +584,22 @@ where
     // Load existing results to skip completed work.
     let existing = load_existing_result_keys(conn, impl_id, spectrum_ids_filter);
 
-    // Work items: pairs not yet in results
-    let mut work: Vec<(i32, i32, &Experiment)> = Vec::new();
+    // Work items grouped by experiment: pairs not yet in results.
+    let mut work_by_experiment: HashMap<i32, Vec<(i32, i32)>> = HashMap::new();
     for &(left_id, right_id) in &context.id_pairs {
         for exp in &context.experiments {
             if !existing.contains(&(left_id, right_id, exp.id)) {
-                work.push((left_id, right_id, exp));
+                work_by_experiment
+                    .entry(exp.id)
+                    .or_default()
+                    .push((left_id, right_id));
             }
         }
     }
 
-    if work.is_empty() {
+    let work_len: usize = work_by_experiment.values().map(Vec::len).sum();
+
+    if work_len == 0 {
         set_substep(
             progress,
             &format!("[compute] {algorithm_label}: nothing to compute"),
@@ -603,12 +609,11 @@ where
 
     set_substep(
         progress,
-        &format!("[compute] {algorithm_label}: 0/{}", work.len()),
+        &format!("[compute] {algorithm_label}: 0/{work_len}"),
     );
-    let work_len = work.len();
 
     let pb = if progress.is_none() {
-        let pb = ProgressBar::new(work.len() as u64);
+        let pb = ProgressBar::new(work_len as u64);
         pb.set_style(
             ProgressStyle::with_template(&format!(
                 "[compute] {algorithm_label} {{bar:40}} {{pos}}/{{len}} [{{eta}}]"
@@ -622,79 +627,101 @@ where
 
     let mut batch: Vec<NewResult> = Vec::with_capacity(FLUSH_BATCH);
     let mut total_done: usize = 0;
-    for (left_id, right_id, exp) in work {
-        let left = context
-            .spectra_map
-            .get(&left_id)
-            .expect("left spectrum not found");
-        let right = context
-            .spectra_map
-            .get(&right_id)
-            .expect("right spectrum not found");
+    for exp in &context.experiments {
+        let Some(exp_work) = work_by_experiment.get(&exp.id) else {
+            continue;
+        };
         let params = exp.parse_params();
         let similarity = build_similarity(&params);
 
-        // Warmup the specific algorithm implementation for this pair/parameter set.
+        // Warmup once per (implementation, experiment) on a small representative pair subset.
+        let warmup_pairs: Vec<(i32, i32)> = exp_work
+            .iter()
+            .copied()
+            .take(GLOBAL_WARMUP_PAIR_SAMPLE)
+            .collect();
         for _ in 0..params.n_warmup {
-            let _ = black_box(similarity.similarity(black_box(left), black_box(right)))
-                .unwrap_or_else(|err| {
-                    panic!(
-                        "[compute] {algorithm_label} warmup failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
-                        exp.id
-                    )
-                });
+            for (left_id, right_id) in &warmup_pairs {
+                let left = context
+                    .spectra_map
+                    .get(left_id)
+                    .expect("left spectrum not found");
+                let right = context
+                    .spectra_map
+                    .get(right_id)
+                    .expect("right spectrum not found");
+                let _ = black_box(similarity.similarity(black_box(left), black_box(right)))
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "[compute] {algorithm_label} warmup failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
+                            exp.id
+                        )
+                    });
+            }
         }
 
-        // Timed runs
-        let mut times_ns: Vec<u128> = Vec::with_capacity(params.n_reps as usize);
-        let mut last_result = (0.0f64, 0usize);
-        for _ in 0..params.n_reps {
-            let t0 = Instant::now();
-            last_result = black_box(similarity.similarity(black_box(left), black_box(right)))
-                .unwrap_or_else(|err| {
-                    panic!(
-                        "[compute] {algorithm_label} run failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
-                        exp.id
-                    )
-                });
-            times_ns.push(t0.elapsed().as_nanos());
-        }
+        for &(left_id, right_id) in exp_work {
+            let left = context
+                .spectra_map
+                .get(&left_id)
+                .expect("left spectrum not found");
+            let right = context
+                .spectra_map
+                .get(&right_id)
+                .expect("right spectrum not found");
 
-        let (score, matches) = last_result;
-        let matches = i32::try_from(matches).unwrap_or_else(|_| {
-            panic!(
-                "[compute] {algorithm_label} produced matches={} that does not fit i32 for left_id={left_id}, right_id={right_id}, experiment_id={}",
-                matches, exp.id
-            )
-        });
-        times_ns.sort_unstable();
-        let median_ns = times_ns[params.n_reps as usize / 2];
-        let median_us = median_ns as f64 / 1000.0;
+            // Timed runs
+            let mut times_ns: Vec<u128> = Vec::with_capacity(params.n_reps as usize);
+            let mut last_result = (0.0f64, 0usize);
+            for _ in 0..params.n_reps {
+                let t0 = Instant::now();
+                last_result = black_box(similarity.similarity(black_box(left), black_box(right)))
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "[compute] {algorithm_label} run failed for left_id={left_id}, right_id={right_id}, experiment_id={}: {err:?}",
+                            exp.id
+                        )
+                    });
+                times_ns.push(t0.elapsed().as_nanos());
+            }
 
-        batch.push(NewResult {
-            left_id,
-            right_id,
-            experiment_id: exp.id,
-            implementation_id: impl_id,
-            score,
-            matches,
-            median_time_us: median_us,
-        });
+            let (score, matches) = last_result;
+            let matches = i32::try_from(matches).unwrap_or_else(|_| {
+                panic!(
+                    "[compute] {algorithm_label} produced matches={} that does not fit i32 for left_id={left_id}, right_id={right_id}, experiment_id={}",
+                    matches, exp.id
+                )
+            });
+            times_ns.sort_unstable();
+            let median_ns = times_ns[params.n_reps as usize / 2];
+            let median_us = median_ns as f64 / 1000.0;
 
-        total_done += 1;
-        inc_progress(progress, 1);
+            batch.push(NewResult {
+                left_id,
+                right_id,
+                experiment_id: exp.id,
+                implementation_id: impl_id,
+                score,
+                matches,
+                median_time_us: median_us,
+            });
 
-        if batch.len() >= FLUSH_BATCH {
-            flush_results(conn, &mut batch);
-        }
+            total_done += 1;
+            inc_progress(progress, 1);
 
-        if let Some(pb) = pb.as_ref() {
-            pb.inc(1);
-        } else if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL) {
-            set_substep(
-                progress,
-                &format!("[compute] {algorithm_label}: {total_done}/{work_len}",),
-            );
+            if batch.len() >= FLUSH_BATCH {
+                flush_results(conn, &mut batch);
+            }
+
+            if let Some(pb) = pb.as_ref() {
+                pb.inc(1);
+            } else if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL)
+            {
+                set_substep(
+                    progress,
+                    &format!("[compute] {algorithm_label}: {total_done}/{work_len}",),
+                );
+            }
         }
     }
 

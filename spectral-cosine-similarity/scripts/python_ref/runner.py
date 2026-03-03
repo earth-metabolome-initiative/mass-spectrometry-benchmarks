@@ -13,6 +13,7 @@ from python_ref.types import ExperimentData
 from python_ref.types import SpectrumData
 
 COMMIT_INTERVAL = 500
+GLOBAL_WARMUP_PAIR_SAMPLE = 100
 
 
 def _validate_score(
@@ -65,51 +66,71 @@ def run_algorithm(
     if not work:
         return 0
 
+    work_by_experiment: dict[int, list] = {experiment.id: [] for experiment in experiments}
+    for item in work:
+        work_by_experiment.setdefault(item.experiment.id, []).append(item)
+
     uncommitted = 0
     algo_label = f"{algorithm_name} ({library_name})"
-    for item in tqdm(work, desc=f"[{algo_label}]", unit="pair", leave=False):
-        left_spec = spectra[item.left_id]
-        right_spec = spectra[item.right_id]
-        params = item.experiment.params
-        n_warmup = int(params["n_warmup"])
-        n_reps = int(params["n_reps"])
+    progress = tqdm(total=len(work), desc=f"[{algo_label}]", unit="pair", leave=False)
+    try:
+        for experiment in experiments:
+            exp_work = work_by_experiment.get(experiment.id, [])
+            if not exp_work:
+                continue
 
-        for _ in range(n_warmup):
-            compute_once(left_spec, right_spec, params)
+            params = experiment.params
+            n_warmup = int(params["n_warmup"])
+            n_reps = int(params["n_reps"])
 
-        times: list[int] = []
-        score = 0.0
-        matches = 0
-        for _ in range(n_reps):
-            t0 = time.perf_counter_ns()
-            raw_score, raw_matches = compute_once(left_spec, right_spec, params)
-            score = _validate_score(
-                raw_score,
-                algorithm_label=algo_label,
-                left_id=item.left_id,
-                right_id=item.right_id,
-                experiment_id=item.experiment.id,
-            )
-            matches = _validate_matches(raw_matches)
-            t1 = time.perf_counter_ns()
-            times.append(t1 - t0)
+            # Warmup once per (implementation, experiment) using a representative subset.
+            warmup_items = exp_work[:GLOBAL_WARMUP_PAIR_SAMPLE]
+            for _ in range(n_warmup):
+                for item in warmup_items:
+                    left_spec = spectra[item.left_id]
+                    right_spec = spectra[item.right_id]
+                    compute_once(left_spec, right_spec, params)
 
-        median_ns = sorted(times)[n_reps // 2]
-        median_us = median_ns / 1000.0
+            for item in exp_work:
+                left_spec = spectra[item.left_id]
+                right_spec = spectra[item.right_id]
 
-        db_io.insert_result(
-            cur=cur,
-            item=item,
-            implementation_id=implementation_id,
-            score=score,
-            matches=matches,
-            median_time_us=median_us,
-        )
+                times: list[int] = []
+                score = 0.0
+                matches = 0
+                for _ in range(n_reps):
+                    t0 = time.perf_counter_ns()
+                    raw_score, raw_matches = compute_once(left_spec, right_spec, params)
+                    score = _validate_score(
+                        raw_score,
+                        algorithm_label=algo_label,
+                        left_id=item.left_id,
+                        right_id=item.right_id,
+                        experiment_id=item.experiment.id,
+                    )
+                    matches = _validate_matches(raw_matches)
+                    t1 = time.perf_counter_ns()
+                    times.append(t1 - t0)
 
-        uncommitted += 1
-        if uncommitted >= COMMIT_INTERVAL:
-            conn.commit()
-            uncommitted = 0
+                median_ns = sorted(times)[n_reps // 2]
+                median_us = median_ns / 1000.0
+
+                db_io.insert_result(
+                    cur=cur,
+                    item=item,
+                    implementation_id=implementation_id,
+                    score=score,
+                    matches=matches,
+                    median_time_us=median_us,
+                )
+
+                uncommitted += 1
+                progress.update(1)
+                if uncommitted >= COMMIT_INTERVAL:
+                    conn.commit()
+                    uncommitted = 0
+    finally:
+        progress.close()
 
     conn.commit()
     return len(work)
