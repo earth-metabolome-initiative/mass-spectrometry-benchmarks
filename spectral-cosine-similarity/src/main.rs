@@ -238,7 +238,7 @@ mod tests {
         let mut conn = db::establish_connection_at(&db_path);
         db::initialize(&mut conn);
 
-        assert_eq!(experiment_count(&mut conn), 4);
+        assert_eq!(experiment_count(&mut conn), 1);
         assert_eq!(spectra_count(&mut conn), 0);
         assert_eq!(results_count(&mut conn), 0);
     }

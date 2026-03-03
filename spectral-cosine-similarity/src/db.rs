@@ -21,11 +21,8 @@ const N_WARMUP: u32 = 3;
 const N_REPS: u32 = 10;
 
 /// Parameter sets: (tolerance, mz_power, intensity_power)
-const PARAM_SETS: [(f64, f64, f64); 4] = [
+const PARAM_SETS: [(f64, f64, f64); 1] = [
     (0.1, 0.0, 1.0), // matchms defaults
-    (0.1, 1.0, 1.0), // current Rust test params
-    (0.5, 1.0, 0.5), // stress test
-    (2.0, 0.0, 1.0), // wide tolerance
 ];
 
 #[derive(QueryableByName)]
@@ -151,6 +148,7 @@ pub fn initialize(conn: &mut SqliteConnection) {
     ensure_implementation(conn, entropy_unweighted_id, ms_entropy_lib_id, true);
 
     // Seed experiments
+    let mut allowed_experiment_ids = Vec::with_capacity(PARAM_SETS.len());
     for (tolerance, mz_power, intensity_power) in PARAM_SETS {
         let params = ExperimentParams {
             tolerance,
@@ -159,8 +157,10 @@ pub fn initialize(conn: &mut SqliteConnection) {
             n_warmup: N_WARMUP,
             n_reps: N_REPS,
         };
-        ensure_experiment(conn, &params);
+        allowed_experiment_ids.push(ensure_experiment(conn, &params));
     }
+
+    prune_experiments_to_allowed(conn, &allowed_experiment_ids);
 }
 
 fn table_has_column(conn: &mut SqliteConnection, table: &str, column: &str) -> bool {
@@ -250,6 +250,30 @@ fn ensure_spectra_hash_schema(conn: &mut SqliteConnection) {
     )
     .execute(conn)
     .expect("failed to create spectra.spectrum_hash unique index");
+}
+
+fn prune_experiments_to_allowed(conn: &mut SqliteConnection, allowed_experiment_ids: &[i32]) {
+    if allowed_experiment_ids.is_empty() {
+        return;
+    }
+
+    let allowed_ids = allowed_experiment_ids
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    sql_query(format!(
+        "DELETE FROM results WHERE experiment_id NOT IN ({allowed_ids})"
+    ))
+    .execute(conn)
+    .expect("failed to delete results for disallowed experiments");
+
+    sql_query(format!(
+        "DELETE FROM experiments WHERE id NOT IN ({allowed_ids})"
+    ))
+    .execute(conn)
+    .expect("failed to delete disallowed experiments");
 }
 
 fn ensure_algorithm(conn: &mut SqliteConnection, name: &str, description: Option<&str>) -> i32 {
@@ -591,6 +615,17 @@ mod tests {
             .expect("failed to load first implementation id")
     }
 
+    fn first_two_implementation_ids(conn: &mut SqliteConnection) -> (i32, i32) {
+        let ids: Vec<i32> = implementations::table
+            .order(implementations::id.asc())
+            .select(implementations::id)
+            .limit(2)
+            .load(conn)
+            .expect("failed to load implementation ids");
+        assert_eq!(ids.len(), 2, "expected at least two implementations");
+        (ids[0], ids[1])
+    }
+
     #[test]
     fn results_reject_invalid_foreign_keys_when_pragmas_enabled() {
         let mut conn = setup_in_memory_connection();
@@ -640,21 +675,15 @@ mod tests {
         let mut conn = setup_in_memory_connection();
         initialize(&mut conn);
         let (left_id, right_id) = seed_two_test_spectra(&mut conn);
-        let experiment_ids: Vec<i32> = experiments::table
-            .order(experiments::id.asc())
-            .select(experiments::id)
-            .limit(2)
-            .load(&mut conn)
-            .expect("failed to load experiment ids");
-        assert_eq!(experiment_ids.len(), 2, "expected at least two experiments");
-        let implementation_id = first_implementation_id(&mut conn);
+        let experiment_id = first_experiment_id(&mut conn);
+        let (implementation_id_a, implementation_id_b) = first_two_implementation_ids(&mut conn);
 
         let above_one = diesel::insert_into(results::table)
             .values(&NewResult {
                 left_id,
                 right_id,
-                experiment_id: experiment_ids[0],
-                implementation_id,
+                experiment_id,
+                implementation_id: implementation_id_a,
                 score: 1.1,
                 matches: 0,
                 median_time_us: 1.0,
@@ -666,8 +695,8 @@ mod tests {
             .values(&NewResult {
                 left_id,
                 right_id,
-                experiment_id: experiment_ids[1],
-                implementation_id,
+                experiment_id,
+                implementation_id: implementation_id_b,
                 score: -0.0001,
                 matches: 0,
                 median_time_us: 1.0,
@@ -681,21 +710,15 @@ mod tests {
         let mut conn = setup_in_memory_connection();
         initialize(&mut conn);
         let (left_id, right_id) = seed_two_test_spectra(&mut conn);
-        let implementation_id = first_implementation_id(&mut conn);
-        let experiment_ids: Vec<i32> = experiments::table
-            .order(experiments::id.asc())
-            .select(experiments::id)
-            .limit(2)
-            .load(&mut conn)
-            .expect("failed to load experiment ids");
-        assert_eq!(experiment_ids.len(), 2, "expected at least two experiments");
+        let experiment_id = first_experiment_id(&mut conn);
+        let (implementation_id_a, implementation_id_b) = first_two_implementation_ids(&mut conn);
 
         let sentinel = diesel::insert_into(results::table)
             .values(&NewResult {
                 left_id,
                 right_id,
-                experiment_id: experiment_ids[0],
-                implementation_id,
+                experiment_id,
+                implementation_id: implementation_id_a,
                 score: 0.5,
                 matches: -1,
                 median_time_us: 1.0,
@@ -707,8 +730,8 @@ mod tests {
             .values(&NewResult {
                 left_id,
                 right_id,
-                experiment_id: experiment_ids[1],
-                implementation_id,
+                experiment_id,
+                implementation_id: implementation_id_b,
                 score: 0.5,
                 matches: -2,
                 median_time_us: 1.0,
@@ -849,6 +872,60 @@ source = "git+https://example.com/repo#abc123def"
         assert_eq!(algorithm_count, 6);
         assert_eq!(implementation_count, 11);
         assert_eq!(experiment_count, PARAM_SETS.len() as i64);
+    }
+
+    #[test]
+    fn initialize_prunes_disallowed_experiments_and_results() {
+        let mut conn = setup_in_memory_connection();
+        initialize(&mut conn);
+
+        let extra_experiment_id = ensure_experiment(
+            &mut conn,
+            &ExperimentParams {
+                tolerance: 0.25,
+                mz_power: 2.0,
+                intensity_power: 0.5,
+                n_warmup: N_WARMUP,
+                n_reps: N_REPS,
+            },
+        );
+        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
+        let implementation_id = first_implementation_id(&mut conn);
+
+        diesel::insert_into(results::table)
+            .values(&NewResult {
+                left_id,
+                right_id,
+                experiment_id: extra_experiment_id,
+                implementation_id,
+                score: 0.5,
+                matches: 0,
+                median_time_us: 1.0,
+            })
+            .execute(&mut conn)
+            .expect("failed to insert result row for extra experiment");
+
+        initialize(&mut conn);
+
+        let experiment_count = experiments::table
+            .select(count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count experiments after prune");
+        assert_eq!(experiment_count, PARAM_SETS.len() as i64);
+
+        let extra_experiment_count = experiments::table
+            .filter(experiments::id.eq(extra_experiment_id))
+            .select(count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count extra experiment rows");
+        assert_eq!(extra_experiment_count, 0);
+
+        let stale_result_count = results::table
+            .filter(results::experiment_id.eq(extra_experiment_id))
+            .select(count_star())
+            .first::<i64>(&mut conn)
+            .expect("failed to count stale result rows");
+        assert_eq!(stale_result_count, 0);
     }
 
     #[test]
