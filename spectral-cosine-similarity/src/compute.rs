@@ -38,6 +38,12 @@ struct RustAlgoSpec {
     algorithm_name: &'static str,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PythonAlgoSpec {
+    algorithm_name: &'static str,
+    library_name: &'static str,
+}
+
 const RUST_ALGO_SPECS: [RustAlgoSpec; 6] = [
     RustAlgoSpec {
         kind: RustAlgoKind::CosineHungarian,
@@ -62,6 +68,29 @@ const RUST_ALGO_SPECS: [RustAlgoSpec; 6] = [
     RustAlgoSpec {
         kind: RustAlgoKind::EntropySimilarityUnweighted,
         algorithm_name: "EntropySimilarityUnweighted",
+    },
+];
+
+const PYTHON_ALGO_SPECS: [PythonAlgoSpec; 5] = [
+    PythonAlgoSpec {
+        algorithm_name: "CosineHungarian",
+        library_name: "matchms",
+    },
+    PythonAlgoSpec {
+        algorithm_name: "CosineGreedy",
+        library_name: "matchms",
+    },
+    PythonAlgoSpec {
+        algorithm_name: "ModifiedGreedyCosine",
+        library_name: "matchms",
+    },
+    PythonAlgoSpec {
+        algorithm_name: "EntropySimilarityWeighted",
+        library_name: "ms_entropy",
+    },
+    PythonAlgoSpec {
+        algorithm_name: "EntropySimilarityUnweighted",
+        library_name: "ms_entropy",
     },
 ];
 
@@ -128,7 +157,7 @@ pub fn run_with_progress_and_notifier(
     progress: Option<&mut dyn StageProgress>,
     notifier: Option<&NtfyNotifier>,
 ) {
-    run_with_matchms_and_progress_with_notifier(
+    run_with_python_algorithms_and_progress_with_notifier(
         conn,
         max_spectra,
         run_matchms_default,
@@ -183,7 +212,7 @@ pub fn run_with_matchms<F>(conn: &mut SqliteConnection, max_spectra: Option<usiz
 where
     F: Fn(Option<usize>),
 {
-    run_with_matchms_and_progress_with_notifier(conn, max_spectra, run_matchms, None, None);
+    run_with_legacy_matchms_and_progress_with_notifier(conn, max_spectra, run_matchms, None, None);
 }
 
 pub fn run_with_matchms_and_progress<F>(
@@ -194,10 +223,31 @@ pub fn run_with_matchms_and_progress<F>(
 ) where
     F: Fn(Option<usize>),
 {
-    run_with_matchms_and_progress_with_notifier(conn, max_spectra, run_matchms, progress, None);
+    run_with_legacy_matchms_and_progress_with_notifier(
+        conn,
+        max_spectra,
+        run_matchms,
+        progress,
+        None,
+    );
 }
 
-fn run_with_matchms_and_progress_with_notifier<F>(
+fn run_with_python_algorithms_and_progress_with_notifier<F>(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    run_matchms: F,
+    mut progress: Option<&mut dyn StageProgress>,
+    notifier: Option<&NtfyNotifier>,
+) where
+    F: Fn(Option<usize>, PythonAlgoSpec),
+{
+    compute_all_split_python(conn, max_spectra, &run_matchms, &mut progress, notifier);
+    set_substep(&mut progress, "[compute] Building timing summary");
+    print_timing_report(conn);
+    clear_substep(&mut progress);
+}
+
+fn run_with_legacy_matchms_and_progress_with_notifier<F>(
     conn: &mut SqliteConnection,
     max_spectra: Option<usize>,
     run_matchms: F,
@@ -225,15 +275,18 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
     batch.clear();
 }
 
-fn run_matchms_default(max_spectra: Option<usize>) {
+fn run_matchms_default(max_spectra: Option<usize>, python_spec: PythonAlgoSpec) {
     let db = db::db_path(max_spectra);
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
         .join("python_reference_compute.py");
+    let python_label = algorithm_cli_label(python_spec.algorithm_name, python_spec.library_name);
     let mut cmd = Command::new("uv");
     cmd.args(["run", "python3"]);
     cmd.arg(&script);
     cmd.arg(db);
+    cmd.arg("--algorithm");
+    cmd.arg(python_spec.algorithm_name);
     if let Some(max_spectra) = max_spectra {
         cmd.arg("--max-spectra");
         cmd.arg(max_spectra.to_string());
@@ -244,7 +297,7 @@ fn run_matchms_default(max_spectra: Option<usize>) {
 
     if !status.success() {
         panic!(
-            "[compute] python_reference_compute.py exited with {status}. \
+            "[compute] python_reference_compute.py exited with {status} for {python_label}. \
 Install Python benchmark dependencies with `uv sync` in spectral-cosine-similarity/ \
 and ensure both `matchms` and `ms_entropy` import successfully."
         );
@@ -307,6 +360,17 @@ fn count_python_results(conn: &mut SqliteConnection, spectrum_ids_filter: Option
     count_results_by_implementation(conn, &python_ids, spectrum_ids_filter)
         .into_values()
         .sum()
+}
+
+fn count_implementation_results(
+    conn: &mut SqliteConnection,
+    implementation_id: i32,
+    spectrum_ids_filter: Option<&[i32]>,
+) -> i64 {
+    count_results_by_implementation(conn, &[implementation_id], spectrum_ids_filter)
+        .get(&implementation_id)
+        .copied()
+        .unwrap_or(0)
 }
 
 fn is_tracked_rust_algorithm(algorithm_name: &str) -> bool {
@@ -439,7 +503,7 @@ fn load_existing_result_keys(
         .collect()
 }
 
-fn run_python_pass<F>(
+fn run_python_legacy_pass<F>(
     conn: &mut SqliteConnection,
     run_matchms: &F,
     max_spectra: Option<usize>,
@@ -461,6 +525,36 @@ where
         run_matchms(max_spectra);
     }
     let after_python = count_python_results(conn, spectrum_ids_filter);
+    let added_python_rows = after_python.saturating_sub(before_python);
+    inc_progress(progress, added_python_rows as u64);
+    added_python_rows as u64
+}
+
+fn run_python_algorithm_pass<F>(
+    conn: &mut SqliteConnection,
+    run_matchms: &F,
+    python_spec: PythonAlgoSpec,
+    max_spectra: Option<usize>,
+    spectrum_ids_filter: Option<&[i32]>,
+    progress: &mut Option<&mut dyn StageProgress>,
+    progress_bar: Option<&ProgressBar>,
+) -> u64
+where
+    F: Fn(Option<usize>, PythonAlgoSpec),
+{
+    let implementation_id =
+        db::get_implementation_id(conn, python_spec.algorithm_name, python_spec.library_name);
+    let python_label = algorithm_cli_label(python_spec.algorithm_name, python_spec.library_name);
+    set_substep(progress, &format!("[compute] Python pass: {python_label}"));
+    let before_python = count_implementation_results(conn, implementation_id, spectrum_ids_filter);
+    if let Some(pb) = progress_bar {
+        pb.suspend(|| {
+            run_matchms(max_spectra, python_spec);
+        });
+    } else {
+        run_matchms(max_spectra, python_spec);
+    }
+    let after_python = count_implementation_results(conn, implementation_id, spectrum_ids_filter);
     let added_python_rows = after_python.saturating_sub(before_python);
     inc_progress(progress, added_python_rows as u64);
     added_python_rows as u64
@@ -708,6 +802,29 @@ fn compute_rust_algorithm_for_kind(
     }
 }
 
+fn run_rust_compute_passes(
+    conn: &mut SqliteConnection,
+    context: &ComputeContext,
+    max_spectra: Option<usize>,
+    progress: &mut Option<&mut dyn StageProgress>,
+    notifier: Option<&NtfyNotifier>,
+) {
+    set_substep(progress, "[compute] Starting Rust algorithms");
+
+    for spec in RUST_ALGO_SPECS {
+        let step_started = Instant::now();
+        let rows_added =
+            compute_rust_algorithm_for_kind(conn, context, spec, max_spectra, progress) as u64;
+        if let Some(notifier) = notifier {
+            notifier.notify_compute_step_completed(
+                &algorithm_cli_label(spec.algorithm_name, RUST_LIBRARY_NAME),
+                step_started.elapsed(),
+                rows_added,
+            );
+        }
+    }
+}
+
 fn compute_all<F>(
     conn: &mut SqliteConnection,
     max_spectra: Option<usize>,
@@ -719,25 +836,11 @@ fn compute_all<F>(
 {
     let context = load_compute_context(conn, max_spectra);
     let spectrum_ids_filter = max_spectra.map(|_| context.spectrum_ids.as_slice());
-
-    set_substep(progress, "[compute] Starting Rust algorithms");
-
-    for spec in RUST_ALGO_SPECS {
-        let step_started = Instant::now();
-        let rows_added =
-            compute_rust_algorithm_for_kind(conn, &context, spec, max_spectra, progress) as u64;
-        if let Some(notifier) = notifier {
-            notifier.notify_compute_step_completed(
-                &algorithm_cli_label(spec.algorithm_name, RUST_LIBRARY_NAME),
-                step_started.elapsed(),
-                rows_added,
-            );
-        }
-    }
+    run_rust_compute_passes(conn, &context, max_spectra, progress, notifier);
 
     // Final Python pass to catch any remaining work.
     let python_started = Instant::now();
-    let rows_added = run_python_pass(
+    let rows_added = run_python_legacy_pass(
         conn,
         run_matchms,
         max_spectra,
@@ -752,6 +855,40 @@ fn compute_all<F>(
             python_started.elapsed(),
             rows_added,
         );
+    }
+}
+
+fn compute_all_split_python<F>(
+    conn: &mut SqliteConnection,
+    max_spectra: Option<usize>,
+    run_matchms: &F,
+    progress: &mut Option<&mut dyn StageProgress>,
+    notifier: Option<&NtfyNotifier>,
+) where
+    F: Fn(Option<usize>, PythonAlgoSpec),
+{
+    let context = load_compute_context(conn, max_spectra);
+    let spectrum_ids_filter = max_spectra.map(|_| context.spectrum_ids.as_slice());
+    run_rust_compute_passes(conn, &context, max_spectra, progress, notifier);
+
+    for python_spec in PYTHON_ALGO_SPECS {
+        let python_started = Instant::now();
+        let rows_added = run_python_algorithm_pass(
+            conn,
+            run_matchms,
+            python_spec,
+            max_spectra,
+            spectrum_ids_filter,
+            progress,
+            None,
+        );
+        if let Some(notifier) = notifier {
+            notifier.notify_compute_step_completed(
+                &algorithm_cli_label(python_spec.algorithm_name, python_spec.library_name),
+                python_started.elapsed(),
+                rows_added,
+            );
+        }
     }
 }
 
@@ -949,5 +1086,25 @@ mod tests {
             db::get_implementation_id(&mut conn, "ModifiedGreedyCosine", "matchms");
         assert!(python_impls.contains(&matchms_modified_greedy));
         assert_eq!(python_impls.len(), 5);
+    }
+
+    #[test]
+    fn python_algorithm_specs_match_registered_python_implementations() {
+        let mut conn =
+            SqliteConnection::establish(":memory:").expect("failed to open in-memory sqlite db");
+        db::initialize(&mut conn);
+
+        let python_impls = python_implementation_ids(&mut conn);
+        for spec in PYTHON_ALGO_SPECS {
+            let implementation_id =
+                db::get_implementation_id(&mut conn, spec.algorithm_name, spec.library_name);
+            assert!(
+                python_impls.contains(&implementation_id),
+                "missing implementation for {}",
+                algorithm_cli_label(spec.algorithm_name, spec.library_name)
+            );
+        }
+
+        assert_eq!(PYTHON_ALGO_SPECS.len(), python_impls.len());
     }
 }
