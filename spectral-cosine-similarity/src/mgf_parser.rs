@@ -19,6 +19,7 @@ pub struct ParseStats {
     pub dropped_too_few_peaks: usize,
     pub dropped_too_many_peaks: usize,
     pub dropped_nonpositive_intensity_peaks: usize,
+    pub dropped_duplicate_mz: usize,
 }
 
 #[derive(Debug, Default)]
@@ -38,7 +39,7 @@ fn preferred_name(
 }
 
 /// Parse an MGF file and return all spectra with a preferred name, precursor_mz,
-/// and a number of peaks within `[min_peaks, max_peaks]`.
+/// a number of peaks within `[min_peaks, max_peaks]`, and no duplicate m/z entries.
 pub fn parse_mgf(path: &Path, min_peaks: usize, max_peaks: usize) -> ParseMgfResult {
     let file = File::open(path).unwrap_or_else(|e| panic!("cannot open {}: {e}", path.display()));
     let reader = BufReader::new(file);
@@ -80,13 +81,17 @@ pub fn parse_mgf(path: &Path, min_peaks: usize, max_peaks: usize) -> ParseMgfRes
                     stats.dropped_too_many_peaks += 1;
                 }
                 (Some(raw_name), Some(pmz)) => {
-                    peaks.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-                    spectra.push(ParsedSpectrum {
-                        raw_name,
-                        precursor_mz: pmz,
-                        peaks: std::mem::take(&mut peaks),
-                    });
-                    stats.accepted += 1;
+                    peaks.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    if peaks.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                        stats.dropped_duplicate_mz += 1;
+                    } else {
+                        spectra.push(ParsedSpectrum {
+                            raw_name,
+                            precursor_mz: pmz,
+                            peaks: std::mem::take(&mut peaks),
+                        });
+                        stats.accepted += 1;
+                    }
                 }
             }
             in_ions = false;
@@ -263,6 +268,7 @@ END IONS"
                 dropped_too_few_peaks: 1,
                 dropped_too_many_peaks: 0,
                 dropped_nonpositive_intensity_peaks: 0,
+                dropped_duplicate_mz: 0,
             }
         );
     }
@@ -378,6 +384,7 @@ END IONS"
                 dropped_too_few_peaks: 1,
                 dropped_too_many_peaks: 0,
                 dropped_nonpositive_intensity_peaks: 7,
+                dropped_duplicate_mz: 0,
             }
         );
     }
@@ -426,6 +433,52 @@ PEPMASS=800"
                 dropped_too_few_peaks: 0,
                 dropped_too_many_peaks: 1,
                 dropped_nonpositive_intensity_peaks: 0,
+                dropped_duplicate_mz: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_mgf_drops_spectra_with_duplicate_mz() {
+        let mut file = NamedTempFile::new().expect("failed to create temporary mgf file");
+        writeln!(
+            file,
+            "\
+BEGIN IONS
+NAME=DuplicateMz
+PEPMASS=111
+100 1
+101 2
+101 3
+102 4
+103 5
+END IONS
+BEGIN IONS
+NAME=UniqueMz
+PEPMASS=222
+200 1
+201 2
+202 3
+203 4
+204 5
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let parsed = parse_mgf(file.path(), 5, 1000);
+        assert_eq!(parsed.spectra.len(), 1);
+        assert_eq!(parsed.spectra[0].raw_name, "UniqueMz");
+        assert_eq!(
+            parsed.stats,
+            ParseStats {
+                ions_blocks: 2,
+                accepted: 1,
+                dropped_missing_name: 0,
+                dropped_missing_precursor_mz: 0,
+                dropped_too_few_peaks: 0,
+                dropped_too_many_peaks: 0,
+                dropped_nonpositive_intensity_peaks: 0,
+                dropped_duplicate_mz: 1,
             }
         );
     }

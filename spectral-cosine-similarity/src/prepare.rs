@@ -157,7 +157,7 @@ pub fn run_with_sources_with_progress(
         let parsed = parse_mgf(mgf_path, MIN_PEAKS, MAX_PEAKS);
         if parsed.stats.accepted == 0 {
             panic!(
-                "present source {source_label} ({}) produced zero parseable spectra; blocks={}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}",
+                "present source {source_label} ({}) produced zero parseable spectra; blocks={}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}, dropped_duplicate_mz={}",
                 mgf_path.display(),
                 parsed.stats.ions_blocks,
                 parsed.stats.dropped_missing_name,
@@ -165,6 +165,7 @@ pub fn run_with_sources_with_progress(
                 parsed.stats.dropped_too_few_peaks,
                 parsed.stats.dropped_too_many_peaks,
                 parsed.stats.dropped_nonpositive_intensity_peaks,
+                parsed.stats.dropped_duplicate_mz,
             );
         }
 
@@ -228,13 +229,14 @@ pub fn run_with_sources_with_progress(
         emit(
             &mut progress,
             &format!(
-                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
+                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}, dropped_duplicate_mz={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
                 parsed.stats.ions_blocks,
                 parsed.stats.dropped_missing_name,
                 parsed.stats.dropped_missing_precursor_mz,
                 parsed.stats.dropped_too_few_peaks,
                 parsed.stats.dropped_too_many_peaks,
                 parsed.stats.dropped_nonpositive_intensity_peaks,
+                parsed.stats.dropped_duplicate_mz,
             ),
         );
 
@@ -481,5 +483,46 @@ END IONS"
             serde_json::from_str(&row.1).expect("failed to parse stored peaks JSON");
         assert_eq!(parsed_peaks.len(), 5);
         assert!(parsed_peaks.iter().all(|(_, intensity)| *intensity > 0.0));
+    }
+
+    #[test]
+    fn drops_spectra_with_duplicate_mz_before_inserting() {
+        let mut conn = setup_in_memory_connection();
+        let mut fixture = NamedTempFile::new().expect("failed to create temporary mgf fixture");
+        writeln!(
+            fixture,
+            "\
+BEGIN IONS
+TITLE=DuplicateMz
+PEPMASS=111
+100 1
+101 2
+101 3
+102 4
+103 5
+END IONS
+BEGIN IONS
+TITLE=UniqueMz
+PEPMASS=222
+200 1
+201 2
+202 3
+203 4
+204 5
+END IONS"
+        )
+        .expect("failed to write temporary mgf fixture");
+
+        let sources: [(&Path, &str); 1] = [(fixture.path(), "duplicate-mz.mgf")];
+        run_with_sources(&mut conn, None, &sources);
+
+        let rows: Vec<(String, i32)> = spectra::table
+            .order(spectra::id.asc())
+            .select((spectra::raw_name, spectra::num_peaks))
+            .load(&mut conn)
+            .expect("failed to query inserted rows");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "UniqueMz");
+        assert_eq!(rows[0].1, 5);
     }
 }
