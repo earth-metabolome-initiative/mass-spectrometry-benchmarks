@@ -109,6 +109,10 @@ def selected_algorithms(algorithm_name: str | None):
 def main() -> None:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA ignore_check_constraints = OFF")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         cur = conn.cursor()
         experiments = db_io.load_experiments(cur)

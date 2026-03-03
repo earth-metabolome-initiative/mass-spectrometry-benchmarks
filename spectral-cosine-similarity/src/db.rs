@@ -45,6 +45,12 @@ fn apply_sqlite_pragmas(conn: &mut SqliteConnection) {
     sql_query("PRAGMA journal_mode = WAL")
         .execute(conn)
         .expect("failed to enable WAL journal mode");
+    sql_query("PRAGMA synchronous = NORMAL")
+        .execute(conn)
+        .expect("failed to set PRAGMA synchronous");
+    sql_query("PRAGMA busy_timeout = 5000")
+        .execute(conn)
+        .expect("failed to set PRAGMA busy_timeout");
     sql_query("PRAGMA foreign_keys = ON")
         .execute(conn)
         .expect("failed to enable PRAGMA foreign_keys");
