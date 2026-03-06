@@ -5,11 +5,12 @@ import sqlite3
 
 import numpy as np
 from matchms import Spectrum
+from numpy.typing import NDArray
 
 from python_ref.types import ExperimentData, SpectrumData
 
 
-def parse_peaks(peaks_json: str) -> tuple[np.ndarray, np.ndarray]:
+def parse_peaks(peaks_json: str) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     peaks = json.loads(peaks_json)
     mz = np.array([peak[0] for peak in peaks], dtype=np.float64)
     intensities = np.array([peak[1] for peak in peaks], dtype=np.float64)
@@ -21,7 +22,9 @@ def parse_peaks(peaks_json: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def build_spectrum(
-    mz: np.ndarray, intensities: np.ndarray, precursor_mz: float
+    mz: NDArray[np.float64],
+    intensities: NDArray[np.float64],
+    precursor_mz: float,
 ) -> Spectrum:
     return Spectrum(
         mz=mz, intensities=intensities, metadata={"precursor_mz": precursor_mz}

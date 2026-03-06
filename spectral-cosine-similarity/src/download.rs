@@ -185,9 +185,8 @@ pub fn run() {
         .unwrap_or_else(|e| panic!("failed to sync {}: {e}", DATASET_PART_PATH));
 
     eprintln!("[download] Verifying md5 digest");
-    let actual_digest = md5_hex(part_path).unwrap_or_else(|e| {
-        panic!("failed to verify md5 for {}: {e}", DATASET_PART_PATH)
-    });
+    let actual_digest = md5_hex(part_path)
+        .unwrap_or_else(|e| panic!("failed to verify md5 for {}: {e}", DATASET_PART_PATH));
     if actual_digest != EXPECTED_MD5 {
         let _ = std::fs::remove_file(part_path);
         panic!(

@@ -53,22 +53,24 @@ fn aggregate_into_buckets(rows: Vec<RawMetricRow>) -> Vec<AggregatedSeriesPoint>
 
     buckets
         .into_iter()
-        .filter_map(|((facet_label, series_label, library_name, bucket_index), acc)| {
-            if acc.count == 0 {
-                return None;
-            }
-            let mean = acc.sum / acc.count as f64;
-            let std_dev = sample_std_dev(acc.count, acc.sum, acc.sum_sq);
-            Some(AggregatedSeriesPoint {
-                facet_label,
-                series_label,
-                library_name,
-                bucket_index,
-                value: mean,
-                std_dev,
-                count: acc.count,
-            })
-        })
+        .filter_map(
+            |((facet_label, series_label, library_name, bucket_index), acc)| {
+                if acc.count == 0 {
+                    return None;
+                }
+                let mean = acc.sum / acc.count as f64;
+                let std_dev = sample_std_dev(acc.count, acc.sum, acc.sum_sq);
+                Some(AggregatedSeriesPoint {
+                    facet_label,
+                    series_label,
+                    library_name,
+                    bucket_index,
+                    value: mean,
+                    std_dev,
+                    count: acc.count,
+                })
+            },
+        )
         .collect()
 }
 
@@ -170,25 +172,27 @@ pub(crate) fn load_rmse_aggregate_rows(conn: &mut SqliteConnection) -> Vec<Aggre
 
     buckets
         .into_iter()
-        .filter_map(|((facet_label, series_label, library_name, bucket_index), acc)| {
-            if acc.count == 0 {
-                return None;
-            }
-            let mean_sq = (acc.sum / acc.count as f64).max(sq_floor);
-            let rmse = mean_sq.sqrt();
-            let std_sq = sample_std_dev(acc.count, acc.sum, acc.sum_sq);
-            let upper = (mean_sq + std_sq).max(sq_floor).sqrt();
-            let lower = (mean_sq - std_sq).max(sq_floor).sqrt();
-            Some(AggregatedSeriesPoint {
-                facet_label,
-                series_label,
-                library_name,
-                bucket_index,
-                value: rmse,
-                std_dev: (upper - lower) / 2.0,
-                count: acc.count,
-            })
-        })
+        .filter_map(
+            |((facet_label, series_label, library_name, bucket_index), acc)| {
+                if acc.count == 0 {
+                    return None;
+                }
+                let mean_sq = (acc.sum / acc.count as f64).max(sq_floor);
+                let rmse = mean_sq.sqrt();
+                let std_sq = sample_std_dev(acc.count, acc.sum, acc.sum_sq);
+                let upper = (mean_sq + std_sq).max(sq_floor).sqrt();
+                let lower = (mean_sq - std_sq).max(sq_floor).sqrt();
+                Some(AggregatedSeriesPoint {
+                    facet_label,
+                    series_label,
+                    library_name,
+                    bucket_index,
+                    value: rmse,
+                    std_dev: (upper - lower) / 2.0,
+                    count: acc.count,
+                })
+            },
+        )
         .collect()
 }
 

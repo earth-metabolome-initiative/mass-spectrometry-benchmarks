@@ -70,7 +70,10 @@ mod tests {
     fn sample_pairs_canonical_ordering() {
         let ids: Vec<i32> = (1..=10).collect();
         for (left, right) in sample_pairs(&ids, 30) {
-            assert!(left <= right, "pair ({left}, {right}) violates left <= right");
+            assert!(
+                left <= right,
+                "pair ({left}, {right}) violates left <= right"
+            );
         }
     }
 

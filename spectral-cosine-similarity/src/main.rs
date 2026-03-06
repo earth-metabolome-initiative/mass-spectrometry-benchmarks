@@ -25,8 +25,11 @@ fn run_pipeline(max_spectra: usize, num_pairs: usize) {
     download::run();
     prepare::run(conn, max_spectra);
     compute::run(conn, max_spectra, num_pairs);
-    report::generate(conn, &report::ReportConfig {
-        requested_max_spectra: max_spectra,
-        ..Default::default()
-    });
+    report::generate(
+        conn,
+        &report::ReportConfig {
+            requested_max_spectra: max_spectra,
+            ..Default::default()
+        },
+    );
 }

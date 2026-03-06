@@ -77,14 +77,56 @@ pub fn initialize(conn: &mut SqliteConnection) {
 
     // Seed algorithms: (name, description, approximates)
     const ALGO_SEEDS: &[(&str, &str, Option<&str>)] = &[
-        ("CosineHungarian", "Hungarian algorithm-based cosine similarity", None),
-        ("CosineGreedy", "Greedy cosine similarity", Some("CosineHungarian")),
-        ("LinearCosine", "Linear-time cosine similarity for well-separated spectra", Some("CosineHungarian")),
-        ("ModifiedCosine", "Exact precursor-shift-aware modified cosine similarity", None),
-        ("ModifiedGreedyCosine", "Greedy precursor-shift-aware modified cosine similarity", Some("ModifiedCosine")),
-        ("ModifiedLinearCosine", "Linear-time modified cosine similarity for well-separated spectra", Some("ModifiedCosine")),
-        ("EntropySimilarityWeighted", "Weighted spectral entropy similarity", None),
-        ("EntropySimilarityUnweighted", "Unweighted spectral entropy similarity", None),
+        (
+            "CosineHungarian",
+            "Hungarian algorithm-based cosine similarity",
+            None,
+        ),
+        (
+            "CosineGreedy",
+            "Greedy cosine similarity",
+            Some("CosineHungarian"),
+        ),
+        (
+            "LinearCosine",
+            "Linear-time cosine similarity for well-separated spectra",
+            Some("CosineHungarianMerged"),
+        ),
+        (
+            "ModifiedCosine",
+            "Exact precursor-shift-aware modified cosine similarity",
+            None,
+        ),
+        (
+            "ModifiedGreedyCosine",
+            "Greedy precursor-shift-aware modified cosine similarity",
+            Some("ModifiedCosine"),
+        ),
+        (
+            "ModifiedLinearCosine",
+            "Linear-time modified cosine similarity for well-separated spectra",
+            Some("ModifiedCosineMerged"),
+        ),
+        (
+            "CosineHungarianMerged",
+            "Hungarian cosine on pre-merged spectra (merged-peaks baseline)",
+            None,
+        ),
+        (
+            "ModifiedCosineMerged",
+            "Modified Hungarian cosine on pre-merged spectra (merged-peaks baseline)",
+            None,
+        ),
+        (
+            "EntropySimilarityWeighted",
+            "Weighted spectral entropy similarity",
+            None,
+        ),
+        (
+            "EntropySimilarityUnweighted",
+            "Unweighted spectral entropy similarity",
+            None,
+        ),
     ];
 
     let mut algo_ids: HashMap<&str, i32> = HashMap::new();
@@ -92,7 +134,8 @@ pub fn initialize(conn: &mut SqliteConnection) {
         algo_ids.insert(name, ensure_algorithm(conn, name, Some(description)));
     }
     for &(name, _, approximates) in ALGO_SEEDS {
-        let approx_id = approximates.map(|a| *algo_ids.get(a).expect("unknown approximation target"));
+        let approx_id =
+            approximates.map(|a| *algo_ids.get(a).expect("unknown approximation target"));
         set_algorithm_approximation(conn, algo_ids[name], approx_id);
     }
 
@@ -139,19 +182,24 @@ pub fn initialize(conn: &mut SqliteConnection) {
         ("EntropySimilarityUnweighted", ms_entropy_lib_id, true),
         ("LinearCosine", rust_lib_id, false),
         ("ModifiedLinearCosine", rust_lib_id, false),
+        ("CosineHungarianMerged", rust_lib_id, true),
+        ("ModifiedCosineMerged", rust_lib_id, true),
     ];
     for &(algo_name, lib_id, is_ref) in impl_seeds {
         ensure_implementation(conn, algo_ids[algo_name], lib_id, is_ref);
     }
 
     // Seed experiment
-    ensure_experiment(conn, &ExperimentParams {
-        tolerance: TOLERANCE,
-        mz_power: MZ_POWER,
-        intensity_power: INTENSITY_POWER,
-        n_warmup: N_WARMUP,
-        n_reps: N_REPS,
-    });
+    ensure_experiment(
+        conn,
+        &ExperimentParams {
+            tolerance: TOLERANCE,
+            mz_power: MZ_POWER,
+            intensity_power: INTENSITY_POWER,
+            n_warmup: N_WARMUP,
+            n_reps: N_REPS,
+        },
+    );
 }
 
 fn ensure_algorithm(conn: &mut SqliteConnection, name: &str, description: Option<&str>) -> i32 {
@@ -408,8 +456,8 @@ source = "git+https://example.com/repo#abc123def"
             .first::<i64>(&mut conn)
             .expect("failed to count experiments");
 
-        assert_eq!(algorithm_count, 8);
-        assert_eq!(implementation_count, 13);
+        assert_eq!(algorithm_count, 10);
+        assert_eq!(implementation_count, 15);
         assert_eq!(experiment_count, 1);
     }
 
@@ -423,9 +471,13 @@ source = "git+https://example.com/repo#abc123def"
             .load(&mut conn)
             .expect("failed to load implementation ids");
 
-        assert_eq!(all_ids.len(), 13);
+        assert_eq!(all_ids.len(), 15);
         let unique: std::collections::HashSet<i32> = all_ids.iter().copied().collect();
-        assert_eq!(unique.len(), all_ids.len(), "implementation IDs must be unique");
+        assert_eq!(
+            unique.len(),
+            all_ids.len(),
+            "implementation IDs must be unique"
+        );
     }
 
     #[test]
@@ -459,7 +511,7 @@ source = "git+https://example.com/repo#abc123def"
             }
         }
 
-        assert_eq!(refs_by_algorithm.len(), 8);
+        assert_eq!(refs_by_algorithm.len(), 10);
         assert!(
             refs_by_algorithm.values().all(|&n| n <= 1),
             "expected at most one reference implementation per algorithm, got {refs_by_algorithm:?}"
@@ -502,10 +554,12 @@ source = "git+https://example.com/repo#abc123def"
         let expected: &[(&str, Option<&str>)] = &[
             ("CosineHungarian", None),
             ("CosineGreedy", Some("CosineHungarian")),
-            ("LinearCosine", Some("CosineHungarian")),
+            ("LinearCosine", Some("CosineHungarianMerged")),
+            ("CosineHungarianMerged", None),
             ("ModifiedCosine", None),
             ("ModifiedGreedyCosine", Some("ModifiedCosine")),
-            ("ModifiedLinearCosine", Some("ModifiedCosine")),
+            ("ModifiedLinearCosine", Some("ModifiedCosineMerged")),
+            ("ModifiedCosineMerged", None),
             ("EntropySimilarityWeighted", None),
             ("EntropySimilarityUnweighted", None),
         ];

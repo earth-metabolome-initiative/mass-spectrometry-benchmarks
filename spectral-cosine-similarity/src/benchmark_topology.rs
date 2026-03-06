@@ -85,7 +85,10 @@ mod tests {
                     && row.library_name == "mass-spectrometry-traits"
             })
             .expect("missing LinearCosine implementation row");
-        assert_eq!(linear_cosine.canonical_algorithm_name, "CosineHungarian");
+        assert_eq!(
+            linear_cosine.canonical_algorithm_name,
+            "CosineHungarianMerged"
+        );
 
         let modified_linear_cosine = rows
             .iter()
@@ -96,7 +99,31 @@ mod tests {
             .expect("missing ModifiedLinearCosine implementation row");
         assert_eq!(
             modified_linear_cosine.canonical_algorithm_name,
-            "ModifiedCosine"
+            "ModifiedCosineMerged"
+        );
+
+        let cosine_hungarian_merged = rows
+            .iter()
+            .find(|row| {
+                row.algorithm_name == "CosineHungarianMerged"
+                    && row.library_name == "mass-spectrometry-traits"
+            })
+            .expect("missing CosineHungarianMerged implementation row");
+        assert_eq!(
+            cosine_hungarian_merged.canonical_algorithm_name,
+            "CosineHungarianMerged"
+        );
+
+        let modified_cosine_merged = rows
+            .iter()
+            .find(|row| {
+                row.algorithm_name == "ModifiedCosineMerged"
+                    && row.library_name == "mass-spectrometry-traits"
+            })
+            .expect("missing ModifiedCosineMerged implementation row");
+        assert_eq!(
+            modified_cosine_merged.canonical_algorithm_name,
+            "ModifiedCosineMerged"
         );
     }
 
@@ -127,6 +154,28 @@ mod tests {
             );
         }
 
+        let expected_cosine_merged_ref = db::get_implementation_id(
+            &mut conn,
+            "CosineHungarianMerged",
+            "mass-spectrometry-traits",
+        );
+        for algorithm in ["CosineHungarianMerged", "LinearCosine"] {
+            let row = rows
+                .iter()
+                .find(|r| {
+                    r.algorithm_name == algorithm && r.library_name == "mass-spectrometry-traits"
+                })
+                .unwrap_or_else(|| panic!("missing row for algorithm {algorithm}"));
+            assert_eq!(
+                row.canonical_reference_implementation_id,
+                Some(expected_cosine_merged_ref)
+            );
+            assert_eq!(
+                row.canonical_reference_library_name.as_deref(),
+                Some("mass-spectrometry-traits")
+            );
+        }
+
         for algorithm in ["ModifiedCosine", "ModifiedGreedyCosine"] {
             let row = rows
                 .iter()
@@ -135,6 +184,28 @@ mod tests {
             assert_eq!(
                 row.canonical_reference_implementation_id,
                 Some(expected_modified_ref)
+            );
+            assert_eq!(
+                row.canonical_reference_library_name.as_deref(),
+                Some("mass-spectrometry-traits")
+            );
+        }
+
+        let expected_modified_merged_ref = db::get_implementation_id(
+            &mut conn,
+            "ModifiedCosineMerged",
+            "mass-spectrometry-traits",
+        );
+        for algorithm in ["ModifiedCosineMerged", "ModifiedLinearCosine"] {
+            let row = rows
+                .iter()
+                .find(|r| {
+                    r.algorithm_name == algorithm && r.library_name == "mass-spectrometry-traits"
+                })
+                .unwrap_or_else(|| panic!("missing row for algorithm {algorithm}"));
+            assert_eq!(
+                row.canonical_reference_implementation_id,
+                Some(expected_modified_merged_ref)
             );
             assert_eq!(
                 row.canonical_reference_library_name.as_deref(),

@@ -212,10 +212,7 @@ fn write_markdown_tables(
 
 // --- Report generation ---
 
-pub fn generate(
-    conn: &mut SqliteConnection,
-    cfg: &ReportConfig,
-) -> ReportArtifacts {
+pub fn generate(conn: &mut SqliteConnection, cfg: &ReportConfig) -> ReportArtifacts {
     eprintln!("[report] Generating charts");
     fs::create_dir_all(&cfg.output_dir).expect("failed to create output directory");
     let total_spectra = total_spectra_count(conn);
@@ -252,11 +249,7 @@ pub fn generate(
     );
 
     let rmse_path = cfg.output_dir.join(&cfg.artifact_names.rmse_svg);
-    let rmse_svg = render_chart_artifact(
-        &rmse_chart,
-        &rmse_path,
-        "[report] Rendering RMSE chart",
-    );
+    let rmse_svg = render_chart_artifact(&rmse_chart, &rmse_path, "[report] Rendering RMSE chart");
 
     let markdown_path = cfg.output_dir.join(&cfg.artifact_names.markdown);
     let run_scope = RunScopeMetadata {
@@ -269,6 +262,7 @@ pub fn generate(
 
     if cfg.include_comparison {
         compare::compare_results(conn);
+        compare::compare_merged_baselines(conn);
     }
 
     ReportArtifacts {

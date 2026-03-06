@@ -42,15 +42,53 @@ struct PythonAlgoSpec {
     library_name: &'static str,
 }
 
-const RUST_ALGO_SPECS: [(&str, Preprocessing, AlgoKind); 8] = [
-    ("CosineHungarian", Preprocessing::None, AlgoKind::HungarianCosine),
+const RUST_ALGO_SPECS: [(&str, Preprocessing, AlgoKind); 10] = [
+    (
+        "CosineHungarian",
+        Preprocessing::None,
+        AlgoKind::HungarianCosine,
+    ),
     ("CosineGreedy", Preprocessing::None, AlgoKind::GreedyCosine),
-    ("LinearCosine", Preprocessing::SiriusMerge, AlgoKind::LinearCosine),
-    ("ModifiedCosine", Preprocessing::None, AlgoKind::ModifiedCosine),
-    ("ModifiedGreedyCosine", Preprocessing::None, AlgoKind::ModifiedGreedyCosine),
-    ("ModifiedLinearCosine", Preprocessing::SiriusMerge, AlgoKind::ModifiedLinearCosine),
-    ("EntropySimilarityWeighted", Preprocessing::MsEntropyClean, AlgoKind::EntropyWeighted),
-    ("EntropySimilarityUnweighted", Preprocessing::MsEntropyClean, AlgoKind::EntropyUnweighted),
+    (
+        "LinearCosine",
+        Preprocessing::SiriusMerge,
+        AlgoKind::LinearCosine,
+    ),
+    (
+        "ModifiedCosine",
+        Preprocessing::None,
+        AlgoKind::ModifiedCosine,
+    ),
+    (
+        "ModifiedGreedyCosine",
+        Preprocessing::None,
+        AlgoKind::ModifiedGreedyCosine,
+    ),
+    (
+        "ModifiedLinearCosine",
+        Preprocessing::SiriusMerge,
+        AlgoKind::ModifiedLinearCosine,
+    ),
+    (
+        "CosineHungarianMerged",
+        Preprocessing::SiriusMerge,
+        AlgoKind::HungarianCosine,
+    ),
+    (
+        "ModifiedCosineMerged",
+        Preprocessing::SiriusMerge,
+        AlgoKind::ModifiedCosine,
+    ),
+    (
+        "EntropySimilarityWeighted",
+        Preprocessing::MsEntropyClean,
+        AlgoKind::EntropyWeighted,
+    ),
+    (
+        "EntropySimilarityUnweighted",
+        Preprocessing::MsEntropyClean,
+        AlgoKind::EntropyUnweighted,
+    ),
 ];
 
 #[cfg(test)]
@@ -127,11 +165,7 @@ pub fn preflight_python_environment() {
 }
 
 /// Compute similarities and timings for all implementations (production entry point).
-pub fn run(
-    conn: &mut SqliteConnection,
-    max_spectra: usize,
-    num_pairs: usize,
-) {
+pub fn run(conn: &mut SqliteConnection, max_spectra: usize, num_pairs: usize) {
     run_with_python_runner(conn, max_spectra, num_pairs, run_python_default);
 }
 
@@ -222,7 +256,10 @@ fn load_compute_context(
     for chunk in id_pairs.chunks(FLUSH_BATCH) {
         let new_pairs: Vec<NewSelectedPair> = chunk
             .iter()
-            .map(|&(l, r)| NewSelectedPair { left_id: l, right_id: r })
+            .map(|&(l, r)| NewSelectedPair {
+                left_id: l,
+                right_id: r,
+            })
             .collect();
         diesel::insert_into(crate::schema::selected_pairs::table)
             .values(&new_pairs)
@@ -244,10 +281,10 @@ fn compute_rust_algorithm<B, S>(
 where
     B: Fn(&ExperimentParams) -> S,
     S: ScalarSimilarity<
-        GenericSpectrum<f64, f64>,
-        GenericSpectrum<f64, f64>,
-        Similarity = std::result::Result<(f64, usize), SimilarityComputationError>,
-    >,
+            GenericSpectrum<f64, f64>,
+            GenericSpectrum<f64, f64>,
+            Similarity = std::result::Result<(f64, usize), SimilarityComputationError>,
+        >,
 {
     let impl_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
     let algorithm_label = algorithm_cli_label(algorithm_name, RUST_LIBRARY_NAME);
@@ -289,21 +326,22 @@ where
 
         for &(left_id, right_id) in id_pairs {
             let left = spectra_map.get(&left_id).expect("left spectrum not found");
-            let right = spectra_map.get(&right_id).expect("right spectrum not found");
+            let right = spectra_map
+                .get(&right_id)
+                .expect("right spectrum not found");
 
             let mut times_ns: Vec<u128> = Vec::with_capacity(params.n_reps as usize);
             let mut last_result = (0.0f64, 0usize);
             for _ in 0..params.n_reps {
                 let t0 = Instant::now();
-                last_result =
-                    black_box(similarity.similarity(black_box(left), black_box(right)))
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "[compute] {algorithm_label} failed for \
+                last_result = black_box(similarity.similarity(black_box(left), black_box(right)))
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "[compute] {algorithm_label} failed for \
                                  ({left_id}, {right_id}), experiment={}: {err:?}",
-                                exp.id
-                            )
-                        });
+                            exp.id
+                        )
+                    });
                 times_ns.push(t0.elapsed().as_nanos());
             }
 
@@ -350,30 +388,94 @@ fn run_algo(
     kind: AlgoKind,
 ) -> usize {
     match kind {
-        AlgoKind::HungarianCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            HungarianCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build HungarianCosine")
-        }),
-        AlgoKind::GreedyCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            GreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build GreedyCosine")
-        }),
-        AlgoKind::LinearCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            LinearCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build LinearCosine")
-        }),
-        AlgoKind::ModifiedCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            ModifiedHungarianCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build ModifiedHungarianCosine")
-        }),
-        AlgoKind::ModifiedGreedyCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            ModifiedGreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build ModifiedGreedyCosine")
-        }),
-        AlgoKind::ModifiedLinearCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            ModifiedLinearCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build ModifiedLinearCosine")
-        }),
-        AlgoKind::EntropyWeighted => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            LinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, true).expect("failed to build LinearEntropy weighted")
-        }),
-        AlgoKind::EntropyUnweighted => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
-            LinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, false).expect("failed to build LinearEntropy unweighted")
-        }),
+        AlgoKind::HungarianCosine => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                HungarianCosine::new(p.mz_power, p.intensity_power, p.tolerance)
+                    .expect("failed to build HungarianCosine")
+            },
+        ),
+        AlgoKind::GreedyCosine => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                GreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance)
+                    .expect("failed to build GreedyCosine")
+            },
+        ),
+        AlgoKind::LinearCosine => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                LinearCosine::new(p.mz_power, p.intensity_power, p.tolerance)
+                    .expect("failed to build LinearCosine")
+            },
+        ),
+        AlgoKind::ModifiedCosine => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                ModifiedHungarianCosine::new(p.mz_power, p.intensity_power, p.tolerance)
+                    .expect("failed to build ModifiedHungarianCosine")
+            },
+        ),
+        AlgoKind::ModifiedGreedyCosine => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                ModifiedGreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance)
+                    .expect("failed to build ModifiedGreedyCosine")
+            },
+        ),
+        AlgoKind::ModifiedLinearCosine => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                ModifiedLinearCosine::new(p.mz_power, p.intensity_power, p.tolerance)
+                    .expect("failed to build ModifiedLinearCosine")
+            },
+        ),
+        AlgoKind::EntropyWeighted => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                LinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, true)
+                    .expect("failed to build LinearEntropy weighted")
+            },
+        ),
+        AlgoKind::EntropyUnweighted => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                LinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, false)
+                    .expect("failed to build LinearEntropy unweighted")
+            },
+        ),
     }
 }
 
@@ -434,7 +536,14 @@ fn run_rust_compute_passes(
             Preprocessing::SiriusMerge => sirius_map.as_ref().expect("sirius map must exist"),
             Preprocessing::MsEntropyClean => entropy_map.as_ref().expect("entropy map must exist"),
         };
-        run_algo(conn, experiments, effective_map, id_pairs, algorithm_name, kind);
+        run_algo(
+            conn,
+            experiments,
+            effective_map,
+            id_pairs,
+            algorithm_name,
+            kind,
+        );
     }
 }
 

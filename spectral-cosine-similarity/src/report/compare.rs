@@ -4,6 +4,7 @@ use diesel::sql_types::{Double, Integer, Text};
 use diesel::sqlite::SqliteConnection;
 
 use super::render::algorithm_uses_match_count_parity;
+use crate::db;
 
 #[derive(QueryableByName)]
 #[allow(dead_code)]
@@ -107,4 +108,79 @@ pub(crate) fn compare_results(conn: &mut SqliteConnection) {
     eprintln!("[report]   Max score diff: {max_score_diff:.6e}");
     eprintln!("[report]   Max match diff: {max_match_diff}");
     eprintln!("[report]   RMSE (score): {rmse:.6e}");
+}
+
+#[derive(QueryableByName)]
+struct MergedBaselineRow {
+    #[diesel(sql_type = Double)]
+    linear_score: f64,
+    #[diesel(sql_type = Integer)]
+    linear_matches: i32,
+    #[diesel(sql_type = Double)]
+    merged_score: f64,
+    #[diesel(sql_type = Integer)]
+    merged_matches: i32,
+}
+
+pub(crate) fn compare_merged_baselines(conn: &mut SqliteConnection) {
+    const RUST_LIB: &str = "mass-spectrometry-traits";
+    const PAIRS: &[(&str, &str)] = &[
+        ("LinearCosine", "CosineHungarianMerged"),
+        ("ModifiedLinearCosine", "ModifiedCosineMerged"),
+    ];
+
+    for &(linear_name, merged_name) in PAIRS {
+        let linear_id = db::get_implementation_id(conn, linear_name, RUST_LIB);
+        let merged_id = db::get_implementation_id(conn, merged_name, RUST_LIB);
+
+        let rows: Vec<MergedBaselineRow> = sql_query(
+            "SELECT l.score AS linear_score,
+                    l.matches AS linear_matches,
+                    m.score AS merged_score,
+                    m.matches AS merged_matches
+             FROM results l
+             JOIN results m ON m.left_id = l.left_id
+                           AND m.right_id = l.right_id
+                           AND m.experiment_id = l.experiment_id
+                           AND m.implementation_id = ?2
+             WHERE l.implementation_id = ?1",
+        )
+        .bind::<Integer, _>(linear_id)
+        .bind::<Integer, _>(merged_id)
+        .load(conn)
+        .expect("failed to load merged baseline comparison rows");
+
+        if rows.is_empty() {
+            eprintln!("[report] {linear_name} vs {merged_name}: no data yet");
+            continue;
+        }
+
+        let mut max_score_diff: f64 = 0.0;
+        let mut max_match_diff: i32 = 0;
+        let mut sum_sq: f64 = 0.0;
+        let mut mismatch_count = 0usize;
+
+        for row in &rows {
+            let sd = (row.linear_score - row.merged_score).abs();
+            let md = (row.linear_matches - row.merged_matches).abs();
+            if sd > max_score_diff {
+                max_score_diff = sd;
+            }
+            if md > max_match_diff {
+                max_match_diff = md;
+            }
+            sum_sq += sd * sd;
+            if sd > 1e-6 || md > 0 {
+                mismatch_count += 1;
+            }
+        }
+
+        let rmse = (sum_sq / rows.len() as f64).sqrt();
+        eprintln!("[report] {linear_name} vs {merged_name}:");
+        eprintln!("[report]   Pairs compared: {}", rows.len());
+        eprintln!("[report]   Mismatch count: {mismatch_count}");
+        eprintln!("[report]   Max score diff: {max_score_diff:.6e}");
+        eprintln!("[report]   Max match diff: {max_match_diff}");
+        eprintln!("[report]   RMSE (score): {rmse:.6e}");
+    }
 }
