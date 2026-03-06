@@ -6,8 +6,7 @@ import sqlite3
 import numpy as np
 from matchms import Spectrum
 
-from python_ref.types import ExperimentData
-from python_ref.types import SpectrumData
+from python_ref.types import ExperimentData, SpectrumData
 
 
 def parse_peaks(peaks_json: str) -> tuple[np.ndarray, np.ndarray]:
@@ -41,23 +40,30 @@ def get_implementation_id(cur: sqlite3.Cursor, algo_name: str, lib_name: str) ->
     )
     row = cur.fetchone()
     if row is None:
-        raise RuntimeError(f"Implementation '{algo_name}' in '{lib_name}' not found in DB")
+        raise RuntimeError(
+            f"Implementation '{algo_name}' in '{lib_name}' not found in DB"
+        )
     return int(row[0])
 
 
 def load_experiments(cur: sqlite3.Cursor) -> list[ExperimentData]:
     cur.execute("SELECT id, params FROM experiments ORDER BY id ASC")
-    return [ExperimentData(id=int(row[0]), params=json.loads(row[1])) for row in cur.fetchall()]
+    return [
+        ExperimentData(id=int(row[0]), params=json.loads(row[1]))
+        for row in cur.fetchall()
+    ]
 
 
 def load_selected_pairs(cur: sqlite3.Cursor) -> list[tuple[int, int]]:
-    cur.execute("SELECT left_id, right_id FROM selected_pairs ORDER BY left_id, right_id")
+    cur.execute(
+        "SELECT left_id, right_id FROM selected_pairs ORDER BY left_id, right_id"
+    )
     return [(int(row[0]), int(row[1])) for row in cur.fetchall()]
 
 
 def load_spectra(cur: sqlite3.Cursor) -> dict[int, SpectrumData]:
     cur.execute(
-        """SELECT s.id, s.peaks, s.precursor_mz, s.num_peaks
+        """SELECT s.id, s.peaks, s.precursor_mz
            FROM spectra s
            WHERE s.id IN (
                SELECT left_id FROM selected_pairs
@@ -68,7 +74,7 @@ def load_spectra(cur: sqlite3.Cursor) -> dict[int, SpectrumData]:
     )
     spectra: dict[int, SpectrumData] = {}
     for row in cur.fetchall():
-        spec_id, peaks_json, precursor_mz, _num_peaks = row
+        spec_id, peaks_json, precursor_mz = row
         mz, intensities = parse_peaks(peaks_json)
         spectra[int(spec_id)] = SpectrumData(
             spectrum=build_spectrum(mz, intensities, float(precursor_mz)),
@@ -91,8 +97,24 @@ def insert_result(
     cur.execute(
         """
         INSERT INTO results
-            (left_id, right_id, experiment_id, implementation_id, score, matches, median_time_us)
+            (
+                left_id,
+                right_id,
+                experiment_id,
+                implementation_id,
+                score,
+                matches,
+                median_time_us
+            )
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (left_id, right_id, experiment_id, implementation_id, score, matches, median_time_us),
+        (
+            left_id,
+            right_id,
+            experiment_id,
+            implementation_id,
+            score,
+            matches,
+            median_time_us,
+        ),
     )

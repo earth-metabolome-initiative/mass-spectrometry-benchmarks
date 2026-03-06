@@ -56,6 +56,6 @@ cargo run --release -- --ntfy
 
 Reports are written to `output/`:
 
-- `timing.svg` &mdash; per-algorithm timing box plots
-- `rmse.svg` &mdash; RMSE vs reference implementation
+- `timing.svg` &mdash; mean timing by peak-count bucket (faceted line chart with error bars)
+- `rmse.svg` &mdash; RMSE vs reference by peak-count bucket
 - `tables.md` &mdash; summary statistics in Markdown

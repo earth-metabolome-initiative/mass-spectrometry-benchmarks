@@ -55,6 +55,10 @@ jobs:
         run: uv sync --locked
       - name: Syntax check scripts
         run: python3 -m compileall -q scripts
+      - name: Ruff (strict)
+        run: uv run --with ruff ruff check scripts
+      - name: Mypy (strict)
+        run: uv run --with mypy mypy scripts
       - name: Import smoke check
         run: uv run python3 -c "import matchms"
       - name: Tiny pipeline integration test

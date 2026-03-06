@@ -1471,6 +1471,7 @@ dependencies = [
     { name = "matchms" },
     { name = "ms-entropy" },
     { name = "numpy" },
+    { name = "tqdm" },
 ]
 
 [package.metadata]
@@ -1478,6 +1479,7 @@ requires-dist = [
     { name = "matchms", specifier = ">=0.18" },
     { name = "ms-entropy", specifier = ">=1.4.0,<2" },
     { name = "numpy" },
+    { name = "tqdm" },
 ]
 
 [[package]]

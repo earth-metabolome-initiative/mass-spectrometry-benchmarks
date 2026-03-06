@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use super::types::{
+use super::render::{
     AggregatedSeriesPoint, BUCKET_BOUNDARIES, FacetChart, FacetedLineChart, LIBRARY_COLORS,
     LineSeriesData, MarkerShape, SeriesStyle,
 };
@@ -32,7 +32,6 @@ impl MetricKind {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn bucket_index(pair_peaks: i32) -> Option<usize> {
     if pair_peaks < BUCKET_BOUNDARIES[0] {
         return None;

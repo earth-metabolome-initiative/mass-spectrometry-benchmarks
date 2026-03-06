@@ -1,12 +1,15 @@
+use std::collections::BTreeMap;
+
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Double, Integer, Text};
+use diesel::sql_types::{Double, Integer, Text};
 use diesel::sqlite::SqliteConnection;
 
-use super::types::{AggregatedSeriesPoint, RMSE_LOG_FLOOR};
+use super::aggregate::bucket_index;
+use super::render::{AggregatedSeriesPoint, RMSE_LOG_FLOOR};
 
 #[derive(Debug, QueryableByName)]
-struct AggregatedMetricRow {
+struct RawMetricRow {
     #[diesel(sql_type = Text)]
     facet_label: String,
     #[diesel(sql_type = Text)]
@@ -14,49 +17,59 @@ struct AggregatedMetricRow {
     #[diesel(sql_type = Text)]
     library_name: String,
     #[diesel(sql_type = Integer)]
-    bucket_index: i32,
-    #[diesel(sql_type = BigInt)]
-    sample_count: i64,
+    min_peaks: i32,
     #[diesel(sql_type = Double)]
-    sum_value: f64,
-    #[diesel(sql_type = Double)]
-    sum_value_sq: f64,
+    value: f64,
 }
 
-fn bucketed_rows_cte_sql() -> &'static str {
-    "WITH bucketed AS (
-         SELECT r.implementation_id,
-                r.left_id,
-                r.right_id,
-                r.experiment_id,
-                r.score,
-                r.median_time_us,
-                vt.algorithm_name,
-                vt.library_name,
-                vt.canonical_algorithm_name,
-                vt.canonical_reference_implementation_id,
-                vt.canonical_reference_library_name,
-                CASE
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 2048 THEN 9
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 1024 THEN 8
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 513 THEN 7
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 257 THEN 6
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 129 THEN 5
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 65 THEN 4
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 33 THEN 3
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 17 THEN 2
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 9 THEN 1
-                    WHEN CASE WHEN sl.num_peaks < sr.num_peaks THEN sl.num_peaks ELSE sr.num_peaks END >= 5 THEN 0
-                    ELSE -1
-                END AS bucket_index
-         FROM results r
-         JOIN v_implementation_topology vt
-           ON vt.implementation_id = r.implementation_id
-         JOIN spectra sl
-           ON sl.id = r.left_id
-         JOIN spectra sr
-           ON sr.id = r.right_id
-     )"
+type AggKey = (String, String, String, usize);
+
+struct BucketAccumulator {
+    sum: f64,
+    sum_sq: f64,
+    count: usize,
+}
+
+fn aggregate_into_buckets(rows: Vec<RawMetricRow>) -> Vec<AggregatedSeriesPoint> {
+    let mut buckets: BTreeMap<AggKey, BucketAccumulator> = BTreeMap::new();
+
+    for row in rows {
+        let Some(bidx) = bucket_index(row.min_peaks) else {
+            continue;
+        };
+        if !row.value.is_finite() {
+            continue;
+        }
+        let key = (row.facet_label, row.series_label, row.library_name, bidx);
+        let acc = buckets.entry(key).or_insert(BucketAccumulator {
+            sum: 0.0,
+            sum_sq: 0.0,
+            count: 0,
+        });
+        acc.sum += row.value;
+        acc.sum_sq += row.value * row.value;
+        acc.count += 1;
+    }
+
+    buckets
+        .into_iter()
+        .filter_map(|((facet_label, series_label, library_name, bucket_index), acc)| {
+            if acc.count == 0 {
+                return None;
+            }
+            let mean = acc.sum / acc.count as f64;
+            let std_dev = sample_std_dev(acc.count, acc.sum, acc.sum_sq);
+            Some(AggregatedSeriesPoint {
+                facet_label,
+                series_label,
+                library_name,
+                bucket_index,
+                value: mean,
+                std_dev,
+                count: acc.count,
+            })
+        })
+        .collect()
 }
 
 fn sample_std_dev(sample_count: usize, sum_value: f64, sum_value_sq: f64) -> f64 {
@@ -69,116 +82,111 @@ fn sample_std_dev(sample_count: usize, sum_value: f64, sum_value_sq: f64) -> f64
     variance.max(0.0).sqrt()
 }
 
+const RAW_ROWS_SQL: &str =
+    "SELECT vt.canonical_algorithm_name || ' (' || vt.canonical_reference_library_name || ')' AS facet_label,
+            vt.algorithm_name || ' (' || vt.library_name || ')' AS series_label,
+            vt.library_name AS library_name,
+            MIN(sl.num_peaks, sr.num_peaks) AS min_peaks,
+            CAST(r.median_time_us AS REAL) AS value
+     FROM results r
+     JOIN v_implementation_topology vt
+       ON vt.implementation_id = r.implementation_id
+     JOIN spectra sl ON sl.id = r.left_id
+     JOIN spectra sr ON sr.id = r.right_id
+     WHERE vt.canonical_reference_implementation_id IS NOT NULL
+     ORDER BY facet_label, series_label";
+
 pub(crate) fn load_timing_aggregate_rows(
     conn: &mut SqliteConnection,
 ) -> Vec<AggregatedSeriesPoint> {
-    let query = format!(
-        "{}
-         SELECT b.canonical_algorithm_name || ' (' || b.canonical_reference_library_name || ')' AS facet_label,
-                b.algorithm_name || ' (' || b.library_name || ')' AS series_label,
-                b.library_name AS library_name,
-                b.bucket_index AS bucket_index,
-                COUNT(*) AS sample_count,
-                SUM(CAST(b.median_time_us AS REAL)) AS sum_value,
-                SUM(CAST(b.median_time_us AS REAL) * CAST(b.median_time_us AS REAL)) AS sum_value_sq
-         FROM bucketed b
-         WHERE b.bucket_index >= 0
-           AND b.canonical_reference_implementation_id IS NOT NULL
-         GROUP BY facet_label, series_label, library_name, bucket_index
-         ORDER BY facet_label, series_label, bucket_index",
-        bucketed_rows_cte_sql()
-    );
-
-    let rows: Vec<AggregatedMetricRow> = sql_query(query)
+    let rows: Vec<RawMetricRow> = sql_query(RAW_ROWS_SQL)
         .load(conn)
-        .expect("failed to load SQL-aggregated timing rows");
-
-    rows.into_iter()
-        .filter_map(|row| {
-            let bucket_index = usize::try_from(row.bucket_index).ok()?;
-            let count = usize::try_from(row.sample_count).ok()?;
-            if count == 0 {
-                return None;
-            }
-            Some(AggregatedSeriesPoint {
-                facet_label: row.facet_label,
-                series_label: row.series_label,
-                library_name: row.library_name,
-                bucket_index,
-                value: row.sum_value / count as f64,
-                std_dev: sample_std_dev(count, row.sum_value, row.sum_value_sq),
-                count,
-            })
-        })
-        .collect()
+        .expect("failed to load raw timing rows");
+    aggregate_into_buckets(rows)
 }
 
 pub(crate) fn load_rmse_aggregate_rows(conn: &mut SqliteConnection) -> Vec<AggregatedSeriesPoint> {
     let sq_floor = RMSE_LOG_FLOOR * RMSE_LOG_FLOOR;
-    let query = format!(
-        "{},
-         paired AS (
-             SELECT b.canonical_algorithm_name || ' (' || b.canonical_reference_library_name || ')' AS facet_label,
-                    b.algorithm_name || ' (' || b.library_name || ')' AS series_label,
-                    b.library_name AS library_name,
-                    b.bucket_index AS bucket_index,
-                    CASE
-                        WHEN ((CAST(b.score AS REAL) - CAST(ref.score AS REAL))
-                              * (CAST(b.score AS REAL) - CAST(ref.score AS REAL))) < {sq_floor}
-                        THEN {sq_floor}
-                        ELSE ((CAST(b.score AS REAL) - CAST(ref.score AS REAL))
-                              * (CAST(b.score AS REAL) - CAST(ref.score AS REAL)))
-                    END AS sq_error
-             FROM bucketed b
-             JOIN results ref
-               ON ref.implementation_id = b.canonical_reference_implementation_id
-              AND ref.left_id = b.left_id
-              AND ref.right_id = b.right_id
-              AND ref.experiment_id = b.experiment_id
-             WHERE b.bucket_index >= 0
-               AND b.canonical_reference_implementation_id IS NOT NULL
-               AND b.implementation_id <> b.canonical_reference_implementation_id
-         )
-         SELECT p.facet_label AS facet_label,
-                p.series_label AS series_label,
-                p.library_name AS library_name,
-                p.bucket_index AS bucket_index,
-                COUNT(*) AS sample_count,
-                SUM(p.sq_error) AS sum_value,
-                SUM(p.sq_error * p.sq_error) AS sum_value_sq
-         FROM paired p
-         GROUP BY p.facet_label, p.series_label, p.library_name, p.bucket_index
-         ORDER BY p.facet_label, p.series_label, p.bucket_index",
-        bucketed_rows_cte_sql(),
-        sq_floor = sq_floor
-    );
 
-    let rows: Vec<AggregatedMetricRow> = sql_query(query)
+    #[derive(Debug, QueryableByName)]
+    struct RawRmseRow {
+        #[diesel(sql_type = Text)]
+        facet_label: String,
+        #[diesel(sql_type = Text)]
+        series_label: String,
+        #[diesel(sql_type = Text)]
+        library_name: String,
+        #[diesel(sql_type = Integer)]
+        min_peaks: i32,
+        #[diesel(sql_type = Double)]
+        sq_error: f64,
+    }
+
+    let query =
+        "SELECT vt.canonical_algorithm_name || ' (' || vt.canonical_reference_library_name || ')' AS facet_label,
+                vt.algorithm_name || ' (' || vt.library_name || ')' AS series_label,
+                vt.library_name AS library_name,
+                MIN(sl.num_peaks, sr.num_peaks) AS min_peaks,
+                (CAST(r.score AS REAL) - CAST(ref.score AS REAL))
+                    * (CAST(r.score AS REAL) - CAST(ref.score AS REAL)) AS sq_error
+         FROM results r
+         JOIN v_implementation_topology vt
+           ON vt.implementation_id = r.implementation_id
+         JOIN spectra sl ON sl.id = r.left_id
+         JOIN spectra sr ON sr.id = r.right_id
+         JOIN results ref
+           ON ref.implementation_id = vt.canonical_reference_implementation_id
+          AND ref.left_id = r.left_id
+          AND ref.right_id = r.right_id
+          AND ref.experiment_id = r.experiment_id
+         WHERE vt.canonical_reference_implementation_id IS NOT NULL
+           AND r.implementation_id <> vt.canonical_reference_implementation_id
+         ORDER BY facet_label, series_label";
+
+    let raw_rows: Vec<RawRmseRow> = sql_query(query)
         .load(conn)
-        .expect("failed to load SQL-aggregated RMSE rows");
+        .expect("failed to load raw RMSE rows");
 
-    rows.into_iter()
-        .filter_map(|row| {
-            let bucket_index = usize::try_from(row.bucket_index).ok()?;
-            let count = usize::try_from(row.sample_count).ok()?;
-            if count == 0 {
+    let mut buckets: BTreeMap<AggKey, BucketAccumulator> = BTreeMap::new();
+
+    for row in raw_rows {
+        let Some(bidx) = bucket_index(row.min_peaks) else {
+            continue;
+        };
+        if !row.sq_error.is_finite() {
+            continue;
+        }
+        let sq = row.sq_error.max(sq_floor);
+        let key = (row.facet_label, row.series_label, row.library_name, bidx);
+        let acc = buckets.entry(key).or_insert(BucketAccumulator {
+            sum: 0.0,
+            sum_sq: 0.0,
+            count: 0,
+        });
+        acc.sum += sq;
+        acc.sum_sq += sq * sq;
+        acc.count += 1;
+    }
+
+    buckets
+        .into_iter()
+        .filter_map(|((facet_label, series_label, library_name, bucket_index), acc)| {
+            if acc.count == 0 {
                 return None;
             }
-
-            let mean_sq = (row.sum_value / count as f64).max(sq_floor);
+            let mean_sq = (acc.sum / acc.count as f64).max(sq_floor);
             let rmse = mean_sq.sqrt();
-            let std_sq = sample_std_dev(count, row.sum_value, row.sum_value_sq);
+            let std_sq = sample_std_dev(acc.count, acc.sum, acc.sum_sq);
             let upper = (mean_sq + std_sq).max(sq_floor).sqrt();
             let lower = (mean_sq - std_sq).max(sq_floor).sqrt();
-
             Some(AggregatedSeriesPoint {
-                facet_label: row.facet_label,
-                series_label: row.series_label,
-                library_name: row.library_name,
+                facet_label,
+                series_label,
+                library_name,
                 bucket_index,
                 value: rmse,
                 std_dev: (upper - lower) / 2.0,
-                count,
+                count: acc.count,
             })
         })
         .collect()

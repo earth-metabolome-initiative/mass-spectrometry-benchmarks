@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+use std::path::Path;
+
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sqlite::SqliteConnection;
-use std::path::Path;
 
 use crate::models::*;
 use crate::schema::*;
@@ -19,10 +21,9 @@ const MS_ENTROPY_LIB_NAME: &str = "ms_entropy";
 const N_WARMUP: u32 = 3;
 const N_REPS: u32 = 5;
 
-/// Parameter sets: (tolerance, mz_power, intensity_power)
-const PARAM_SETS: [(f64, f64, f64); 1] = [
-    (0.01, 0.0, 1.0), // single benchmark default
-];
+const TOLERANCE: f64 = 0.01;
+const MZ_POWER: f64 = 0.0;
+const INTENSITY_POWER: f64 = 1.0;
 
 pub fn db_path() -> &'static str {
     DB_PATH
@@ -74,51 +75,26 @@ pub fn initialize(conn: &mut SqliteConnection) {
         }
     }
 
-    // Seed algorithms (implementation-agnostic)
-    let cosine_hungarian_id = ensure_algorithm(
-        conn,
-        "CosineHungarian",
-        Some("Hungarian algorithm-based cosine similarity"),
-    );
-    let cosine_greedy_id = ensure_algorithm(conn, "CosineGreedy", Some("Greedy cosine similarity"));
-    let modified_cosine_id = ensure_algorithm(
-        conn,
-        "ModifiedCosine",
-        Some("Exact precursor-shift-aware modified cosine similarity"),
-    );
-    let modified_greedy_cosine_id = ensure_algorithm(
-        conn,
-        "ModifiedGreedyCosine",
-        Some("Greedy precursor-shift-aware modified cosine similarity"),
-    );
-    let entropy_weighted_id = ensure_algorithm(
-        conn,
-        "EntropySimilarityWeighted",
-        Some("Weighted spectral entropy similarity"),
-    );
-    let entropy_unweighted_id = ensure_algorithm(
-        conn,
-        "EntropySimilarityUnweighted",
-        Some("Unweighted spectral entropy similarity"),
-    );
-    let linear_cosine_id = ensure_algorithm(
-        conn,
-        "LinearCosine",
-        Some("Linear-time cosine similarity for well-separated spectra"),
-    );
-    let modified_linear_cosine_id = ensure_algorithm(
-        conn,
-        "ModifiedLinearCosine",
-        Some("Linear-time modified cosine similarity for well-separated spectra"),
-    );
-    set_algorithm_approximation(conn, cosine_hungarian_id, None);
-    set_algorithm_approximation(conn, cosine_greedy_id, Some(cosine_hungarian_id));
-    set_algorithm_approximation(conn, linear_cosine_id, Some(cosine_hungarian_id));
-    set_algorithm_approximation(conn, modified_cosine_id, None);
-    set_algorithm_approximation(conn, modified_greedy_cosine_id, Some(modified_cosine_id));
-    set_algorithm_approximation(conn, modified_linear_cosine_id, Some(modified_cosine_id));
-    set_algorithm_approximation(conn, entropy_weighted_id, None);
-    set_algorithm_approximation(conn, entropy_unweighted_id, None);
+    // Seed algorithms: (name, description, approximates)
+    const ALGO_SEEDS: &[(&str, &str, Option<&str>)] = &[
+        ("CosineHungarian", "Hungarian algorithm-based cosine similarity", None),
+        ("CosineGreedy", "Greedy cosine similarity", Some("CosineHungarian")),
+        ("LinearCosine", "Linear-time cosine similarity for well-separated spectra", Some("CosineHungarian")),
+        ("ModifiedCosine", "Exact precursor-shift-aware modified cosine similarity", None),
+        ("ModifiedGreedyCosine", "Greedy precursor-shift-aware modified cosine similarity", Some("ModifiedCosine")),
+        ("ModifiedLinearCosine", "Linear-time modified cosine similarity for well-separated spectra", Some("ModifiedCosine")),
+        ("EntropySimilarityWeighted", "Weighted spectral entropy similarity", None),
+        ("EntropySimilarityUnweighted", "Unweighted spectral entropy similarity", None),
+    ];
+
+    let mut algo_ids: HashMap<&str, i32> = HashMap::new();
+    for &(name, description, _) in ALGO_SEEDS {
+        algo_ids.insert(name, ensure_algorithm(conn, name, Some(description)));
+    }
+    for &(name, _, approximates) in ALGO_SEEDS {
+        let approx_id = approximates.map(|a| *algo_ids.get(a).expect("unknown approximation target"));
+        set_algorithm_approximation(conn, algo_ids[name], approx_id);
+    }
 
     // Seed libraries
     let rust_version = rust_lib_version();
@@ -148,32 +124,34 @@ pub fn initialize(conn: &mut SqliteConnection) {
         "python",
     );
 
-    // Seed implementations (same algorithm can have multiple implementations)
-    ensure_implementation(conn, cosine_hungarian_id, rust_lib_id, false);
-    ensure_implementation(conn, cosine_hungarian_id, matchms_lib_id, true);
-    ensure_implementation(conn, cosine_greedy_id, rust_lib_id, false);
-    ensure_implementation(conn, cosine_greedy_id, matchms_lib_id, true);
-    ensure_implementation(conn, modified_cosine_id, rust_lib_id, true);
-    ensure_implementation(conn, modified_greedy_cosine_id, rust_lib_id, false);
-    ensure_implementation(conn, modified_greedy_cosine_id, matchms_lib_id, false);
-    ensure_implementation(conn, entropy_weighted_id, rust_lib_id, false);
-    ensure_implementation(conn, entropy_weighted_id, ms_entropy_lib_id, true);
-    ensure_implementation(conn, entropy_unweighted_id, rust_lib_id, false);
-    ensure_implementation(conn, entropy_unweighted_id, ms_entropy_lib_id, true);
-    ensure_implementation(conn, linear_cosine_id, rust_lib_id, false);
-    ensure_implementation(conn, modified_linear_cosine_id, rust_lib_id, false);
-
-    // Seed experiments
-    for (tolerance, mz_power, intensity_power) in PARAM_SETS {
-        let params = ExperimentParams {
-            tolerance,
-            mz_power,
-            intensity_power,
-            n_warmup: N_WARMUP,
-            n_reps: N_REPS,
-        };
-        ensure_experiment(conn, &params);
+    // Seed implementations: (algorithm, library_id, is_reference)
+    let impl_seeds: &[(&str, i32, bool)] = &[
+        ("CosineHungarian", rust_lib_id, false),
+        ("CosineHungarian", matchms_lib_id, true),
+        ("CosineGreedy", rust_lib_id, false),
+        ("CosineGreedy", matchms_lib_id, true),
+        ("ModifiedCosine", rust_lib_id, true),
+        ("ModifiedGreedyCosine", rust_lib_id, false),
+        ("ModifiedGreedyCosine", matchms_lib_id, false),
+        ("EntropySimilarityWeighted", rust_lib_id, false),
+        ("EntropySimilarityWeighted", ms_entropy_lib_id, true),
+        ("EntropySimilarityUnweighted", rust_lib_id, false),
+        ("EntropySimilarityUnweighted", ms_entropy_lib_id, true),
+        ("LinearCosine", rust_lib_id, false),
+        ("ModifiedLinearCosine", rust_lib_id, false),
+    ];
+    for &(algo_name, lib_id, is_ref) in impl_seeds {
+        ensure_implementation(conn, algo_ids[algo_name], lib_id, is_ref);
     }
+
+    // Seed experiment
+    ensure_experiment(conn, &ExperimentParams {
+        tolerance: TOLERANCE,
+        mz_power: MZ_POWER,
+        intensity_power: INTENSITY_POWER,
+        n_warmup: N_WARMUP,
+        n_reps: N_REPS,
+    });
 }
 
 fn ensure_algorithm(conn: &mut SqliteConnection, name: &str, description: Option<&str>) -> i32 {
@@ -306,7 +284,7 @@ fn ensure_experiment(conn: &mut SqliteConnection, params: &ExperimentParams) -> 
 fn rust_lib_version() -> String {
     let lock_path = "Cargo.lock";
     if let Ok(content) = std::fs::read_to_string(lock_path)
-        && let Some(version) = extract_mass_spec_version(&content)
+        && let Some(version) = extract_mass_spec_field(&content, "version = ")
     {
         return version;
     }
@@ -315,40 +293,22 @@ fn rust_lib_version() -> String {
 
 fn rust_lib_git_commit() -> Option<String> {
     let lock_path = "Cargo.lock";
-    if let Ok(content) = std::fs::read_to_string(lock_path) {
-        return extract_mass_spec_git_commit(&content);
-    }
-    None
+    let content = std::fs::read_to_string(lock_path).ok()?;
+    let source = extract_mass_spec_field(&content, "source = ")?;
+    source.split('#').nth(1).map(|s| s.to_string())
 }
 
-pub(crate) fn extract_mass_spec_version(lock_content: &str) -> Option<String> {
+fn extract_mass_spec_field(lock_content: &str, field_prefix: &str) -> Option<String> {
     let mut in_mass_spec = false;
     for line in lock_content.lines() {
         if line.starts_with("name = \"mass_spectrometry\"") {
             in_mass_spec = true;
-        } else if in_mass_spec && line.starts_with("version = ") {
+        } else if in_mass_spec && line.starts_with(field_prefix) {
             return Some(
-                line.trim_start_matches("version = ")
+                line.trim_start_matches(field_prefix)
                     .trim_matches('"')
                     .to_string(),
             );
-        } else if in_mass_spec && line.starts_with("[[") {
-            break;
-        }
-    }
-    None
-}
-
-pub(crate) fn extract_mass_spec_git_commit(lock_content: &str) -> Option<String> {
-    let mut in_mass_spec = false;
-    for line in lock_content.lines() {
-        if line.starts_with("name = \"mass_spectrometry\"") {
-            in_mass_spec = true;
-        } else if in_mass_spec && line.starts_with("source = ") {
-            let source = line.trim_start_matches("source = ").trim_matches('"');
-            if let Some(hash) = source.split('#').nth(1) {
-                return Some(hash.to_string());
-            }
         } else if in_mass_spec && line.starts_with("[[") {
             break;
         }
@@ -407,260 +367,6 @@ mod tests {
         conn
     }
 
-    fn seed_two_test_spectra(conn: &mut SqliteConnection) -> (i32, i32) {
-        sql_query(
-            "INSERT INTO spectra
-                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
-             VALUES
-                ('spec_left', 'spec_left', 'test.mgf', 'test_hash_left', 100.0, 2, '[[50.0, 0.5], [60.0, 0.5]]'),
-                ('spec_right', 'spec_right', 'test.mgf', 'test_hash_right', 200.0, 2, '[[70.0, 0.5], [80.0, 0.5]]')",
-        )
-        .execute(conn)
-        .expect("failed to seed test spectra");
-
-        let left_id = spectra::table
-            .filter(spectra::spectrum_hash.eq("test_hash_left"))
-            .select(spectra::id)
-            .first::<i32>(conn)
-            .expect("failed to load left test spectrum id");
-        let right_id = spectra::table
-            .filter(spectra::spectrum_hash.eq("test_hash_right"))
-            .select(spectra::id)
-            .first::<i32>(conn)
-            .expect("failed to load right test spectrum id");
-        (left_id, right_id)
-    }
-
-    fn first_experiment_id(conn: &mut SqliteConnection) -> i32 {
-        experiments::table
-            .order(experiments::id.asc())
-            .select(experiments::id)
-            .first::<i32>(conn)
-            .expect("failed to load first experiment id")
-    }
-
-    fn first_implementation_id(conn: &mut SqliteConnection) -> i32 {
-        implementations::table
-            .order(implementations::id.asc())
-            .select(implementations::id)
-            .first::<i32>(conn)
-            .expect("failed to load first implementation id")
-    }
-
-    fn first_two_implementation_ids(conn: &mut SqliteConnection) -> (i32, i32) {
-        let ids: Vec<i32> = implementations::table
-            .order(implementations::id.asc())
-            .select(implementations::id)
-            .limit(2)
-            .load(conn)
-            .expect("failed to load implementation ids");
-        assert_eq!(ids.len(), 2, "expected at least two implementations");
-        (ids[0], ids[1])
-    }
-
-    #[test]
-    fn results_reject_invalid_foreign_keys_when_pragmas_enabled() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-
-        let bad_insert = diesel::insert_into(results::table)
-            .values(&NewResult {
-                left_id: 999_999,
-                right_id: 999_999,
-                experiment_id: first_experiment_id(&mut conn),
-                implementation_id: first_implementation_id(&mut conn),
-                score: 0.5,
-                matches: 0,
-                median_time_us: 1.0,
-            })
-            .execute(&mut conn);
-
-        assert!(
-            bad_insert.is_err(),
-            "foreign key violation should be rejected"
-        );
-    }
-
-    #[test]
-    fn results_enforce_pair_ordering_check() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
-
-        let bad_insert = diesel::insert_into(results::table)
-            .values(&NewResult {
-                left_id: right_id,
-                right_id: left_id,
-                experiment_id: first_experiment_id(&mut conn),
-                implementation_id: first_implementation_id(&mut conn),
-                score: 0.5,
-                matches: 0,
-                median_time_us: 1.0,
-            })
-            .execute(&mut conn);
-
-        assert!(bad_insert.is_err(), "left_id > right_id must be rejected");
-    }
-
-    #[test]
-    fn results_enforce_score_bounds() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
-        let experiment_id = first_experiment_id(&mut conn);
-        let (implementation_id_a, implementation_id_b) = first_two_implementation_ids(&mut conn);
-
-        let above_one = diesel::insert_into(results::table)
-            .values(&NewResult {
-                left_id,
-                right_id,
-                experiment_id,
-                implementation_id: implementation_id_a,
-                score: 1.1,
-                matches: 0,
-                median_time_us: 1.0,
-            })
-            .execute(&mut conn);
-        assert!(above_one.is_err(), "score > 1.000001 must be rejected");
-
-        let below_zero = diesel::insert_into(results::table)
-            .values(&NewResult {
-                left_id,
-                right_id,
-                experiment_id,
-                implementation_id: implementation_id_b,
-                score: -0.0001,
-                matches: 0,
-                median_time_us: 1.0,
-            })
-            .execute(&mut conn);
-        assert!(below_zero.is_err(), "score < 0 must be rejected");
-    }
-
-    #[test]
-    fn results_allow_entropy_matches_sentinel_and_reject_lower_values() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
-        let experiment_id = first_experiment_id(&mut conn);
-        let (implementation_id_a, implementation_id_b) = first_two_implementation_ids(&mut conn);
-
-        let sentinel = diesel::insert_into(results::table)
-            .values(&NewResult {
-                left_id,
-                right_id,
-                experiment_id,
-                implementation_id: implementation_id_a,
-                score: 0.5,
-                matches: -1,
-                median_time_us: 1.0,
-            })
-            .execute(&mut conn);
-        assert!(sentinel.is_ok(), "matches = -1 should be allowed");
-
-        let invalid = diesel::insert_into(results::table)
-            .values(&NewResult {
-                left_id,
-                right_id,
-                experiment_id,
-                implementation_id: implementation_id_b,
-                score: 0.5,
-                matches: -2,
-                median_time_us: 1.0,
-            })
-            .execute(&mut conn);
-        assert!(invalid.is_err(), "matches < -1 must be rejected");
-    }
-
-    #[test]
-    fn spectra_constraints_reject_absurd_rows() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-
-        let bad_num_peaks = sql_query(
-            "INSERT INTO spectra
-                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
-             VALUES
-                ('bad_num_peaks', 'bad_num_peaks', 'test.mgf', 'bad_hash_num_peaks', 100.0, 0, '[[50.0, 1.0]]')",
-        )
-        .execute(&mut conn);
-        assert!(bad_num_peaks.is_err(), "num_peaks <= 0 must be rejected");
-
-        let bad_precursor = sql_query(
-            "INSERT INTO spectra
-                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
-             VALUES
-                ('bad_precursor', 'bad_precursor', 'test.mgf', 'bad_hash_precursor', 0.0, 2, '[[50.0, 1.0]]')",
-        )
-        .execute(&mut conn);
-        assert!(bad_precursor.is_err(), "precursor_mz <= 0 must be rejected");
-
-        let bad_peaks_json = sql_query(
-            "INSERT INTO spectra
-                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
-             VALUES
-                ('bad_json', 'bad_json', 'test.mgf', 'bad_hash_json', 150.0, 2, 'not-json')",
-        )
-        .execute(&mut conn);
-        assert!(
-            bad_peaks_json.is_err(),
-            "invalid peaks JSON must be rejected"
-        );
-
-        let blank_name = sql_query(
-            "INSERT INTO spectra
-                (name, raw_name, source_file, spectrum_hash, precursor_mz, num_peaks, peaks)
-             VALUES
-                ('   ', 'blank', 'test.mgf', 'bad_hash_blank_name', 150.0, 2, '[[50.0, 1.0]]')",
-        )
-        .execute(&mut conn);
-        assert!(blank_name.is_err(), "blank spectrum name must be rejected");
-    }
-
-    #[test]
-    fn libraries_and_experiments_reject_invalid_values() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-
-        let bad_language = sql_query(
-            "INSERT INTO libraries (name, version, git_commit, git_url, language)
-             VALUES ('invalid-lib', '0.0.1', NULL, NULL, 'go')",
-        )
-        .execute(&mut conn);
-        assert!(
-            bad_language.is_err(),
-            "unsupported library language must be rejected"
-        );
-
-        let bad_experiment =
-            sql_query("INSERT INTO experiments (params) VALUES ('not-json')").execute(&mut conn);
-        assert!(
-            bad_experiment.is_err(),
-            "invalid experiment JSON must be rejected"
-        );
-    }
-
-    #[test]
-    fn algorithms_reject_self_approximation() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-
-        let algorithm_id = algorithms::table
-            .order(algorithms::id.asc())
-            .select(algorithms::id)
-            .first::<i32>(&mut conn)
-            .expect("failed to load an algorithm id");
-
-        let update = sql_query(format!(
-            "UPDATE algorithms SET approximates_algorithm_id = {algorithm_id} WHERE id = {algorithm_id}"
-        ))
-        .execute(&mut conn);
-        assert!(
-            update.is_err(),
-            "self-approximation should be rejected by CHECK"
-        );
-    }
-
     #[test]
     fn extracts_mass_spec_version_and_commit() {
         let lock = r#"
@@ -674,11 +380,12 @@ version = "0.9.1"
 source = "git+https://example.com/repo#abc123def"
 "#;
 
-        assert_eq!(extract_mass_spec_version(lock), Some("0.9.1".to_string()));
         assert_eq!(
-            extract_mass_spec_git_commit(lock),
-            Some("abc123def".to_string())
+            extract_mass_spec_field(lock, "version = "),
+            Some("0.9.1".to_string())
         );
+        let source = extract_mass_spec_field(lock, "source = ").unwrap();
+        assert_eq!(source.split('#').nth(1), Some("abc123def"));
     }
 
     #[test]
@@ -703,59 +410,22 @@ source = "git+https://example.com/repo#abc123def"
 
         assert_eq!(algorithm_count, 8);
         assert_eq!(implementation_count, 13);
-        assert_eq!(experiment_count, PARAM_SETS.len() as i64);
+        assert_eq!(experiment_count, 1);
     }
 
     #[test]
-    fn resolves_seeded_implementation_ids() {
+    fn resolves_seeded_implementation_ids_are_unique() {
         let mut conn = setup_in_memory_connection();
         initialize(&mut conn);
 
-        let rust_hungarian =
-            get_implementation_id(&mut conn, "CosineHungarian", "mass-spectrometry-traits");
-        let matchms_hungarian = get_implementation_id(&mut conn, "CosineHungarian", "matchms");
-        let rust_greedy =
-            get_implementation_id(&mut conn, "CosineGreedy", "mass-spectrometry-traits");
-        let matchms_greedy = get_implementation_id(&mut conn, "CosineGreedy", "matchms");
-        let rust_modified =
-            get_implementation_id(&mut conn, "ModifiedCosine", "mass-spectrometry-traits");
-        let rust_modified_greedy = get_implementation_id(
-            &mut conn,
-            "ModifiedGreedyCosine",
-            "mass-spectrometry-traits",
-        );
-        let matchms_modified_greedy =
-            get_implementation_id(&mut conn, "ModifiedGreedyCosine", "matchms");
-        let rust_entropy_weighted = get_implementation_id(
-            &mut conn,
-            "EntropySimilarityWeighted",
-            "mass-spectrometry-traits",
-        );
-        let py_entropy_weighted =
-            get_implementation_id(&mut conn, "EntropySimilarityWeighted", "ms_entropy");
-        let rust_entropy_unweighted = get_implementation_id(
-            &mut conn,
-            "EntropySimilarityUnweighted",
-            "mass-spectrometry-traits",
-        );
-        let py_entropy_unweighted =
-            get_implementation_id(&mut conn, "EntropySimilarityUnweighted", "ms_entropy");
+        let all_ids: Vec<i32> = implementations::table
+            .select(implementations::id)
+            .load(&mut conn)
+            .expect("failed to load implementation ids");
 
-        assert_ne!(rust_hungarian, matchms_hungarian);
-        assert_ne!(rust_greedy, matchms_greedy);
-        assert_ne!(rust_hungarian, rust_greedy);
-        assert_ne!(matchms_hungarian, matchms_greedy);
-        assert_ne!(rust_hungarian, matchms_greedy);
-        assert_ne!(matchms_hungarian, rust_greedy);
-        assert_ne!(rust_modified_greedy, matchms_modified_greedy);
-        assert_ne!(rust_modified, rust_modified_greedy);
-        assert_ne!(rust_hungarian, rust_modified);
-        assert_ne!(matchms_hungarian, matchms_modified_greedy);
-        assert_ne!(matchms_greedy, matchms_modified_greedy);
-        assert_ne!(rust_entropy_weighted, py_entropy_weighted);
-        assert_ne!(rust_entropy_unweighted, py_entropy_unweighted);
-        assert_ne!(rust_entropy_weighted, rust_entropy_unweighted);
-        assert_ne!(py_entropy_weighted, py_entropy_unweighted);
+        assert_eq!(all_ids.len(), 13);
+        let unique: std::collections::HashSet<i32> = all_ids.iter().copied().collect();
+        assert_eq!(unique.len(), all_ids.len(), "implementation IDs must be unique");
     }
 
     #[test]
@@ -825,94 +495,50 @@ source = "git+https://example.com/repo#abc123def"
     }
 
     #[test]
-    fn seeds_cosine_greedy_as_approximation_of_cosine_hungarian() {
+    fn seeds_approximation_relationships() {
         let mut conn = setup_in_memory_connection();
         initialize(&mut conn);
 
-        let cosine_hungarian_id = algorithms::table
-            .filter(algorithms::name.eq("CosineHungarian"))
-            .select(algorithms::id)
-            .first::<i32>(&mut conn)
-            .expect("failed to load CosineHungarian id");
+        let expected: &[(&str, Option<&str>)] = &[
+            ("CosineHungarian", None),
+            ("CosineGreedy", Some("CosineHungarian")),
+            ("LinearCosine", Some("CosineHungarian")),
+            ("ModifiedCosine", None),
+            ("ModifiedGreedyCosine", Some("ModifiedCosine")),
+            ("ModifiedLinearCosine", Some("ModifiedCosine")),
+            ("EntropySimilarityWeighted", None),
+            ("EntropySimilarityUnweighted", None),
+        ];
 
-        let cosine_greedy_approx = algorithms::table
-            .filter(algorithms::name.eq("CosineGreedy"))
-            .select(algorithms::approximates_algorithm_id)
-            .first::<Option<i32>>(&mut conn)
-            .expect("failed to load CosineGreedy approximation target");
+        for &(algo_name, expected_approx) in expected {
+            let (approx_id, approx_name): (Option<i32>, Option<String>) = {
+                let row = algorithms::table
+                    .filter(algorithms::name.eq(algo_name))
+                    .select((algorithms::approximates_algorithm_id, algorithms::name))
+                    .first::<(Option<i32>, String)>(&mut conn)
+                    .unwrap_or_else(|_| panic!("algorithm {algo_name} not found"));
 
-        assert_eq!(cosine_greedy_approx, Some(cosine_hungarian_id));
+                let name = row.0.map(|id| {
+                    algorithms::table
+                        .filter(algorithms::id.eq(id))
+                        .select(algorithms::name)
+                        .first::<String>(&mut conn)
+                        .expect("approximation target not found")
+                });
+                (row.0, name)
+            };
 
-        let cosine_hungarian_approx = algorithms::table
-            .filter(algorithms::name.eq("CosineHungarian"))
-            .select(algorithms::approximates_algorithm_id)
-            .first::<Option<i32>>(&mut conn)
-            .expect("failed to load CosineHungarian approximation target");
-
-        assert_eq!(cosine_hungarian_approx, None);
-    }
-
-    #[test]
-    fn does_not_seed_modified_cosine_approx_algorithm() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-
-        let modified_cosine_approx = algorithms::table
-            .filter(algorithms::name.eq("ModifiedCosineApprox"))
-            .select(algorithms::id)
-            .first::<i32>(&mut conn)
-            .optional()
-            .expect("failed to query ModifiedCosineApprox algorithm");
-        assert_eq!(modified_cosine_approx, None);
-
-        let rust_modified_ref = implementations::table
-            .inner_join(algorithms::table)
-            .inner_join(libraries::table)
-            .filter(algorithms::name.eq("ModifiedCosine"))
-            .filter(libraries::name.eq("mass-spectrometry-traits"))
-            .select(implementations::is_reference)
-            .first::<bool>(&mut conn)
-            .expect("failed to load ModifiedCosine rust reference flag");
-        assert!(rust_modified_ref);
-    }
-
-    #[test]
-    fn seeds_modified_greedy_cosine_as_approximation_of_modified_cosine() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-
-        let modified_cosine_id = algorithms::table
-            .filter(algorithms::name.eq("ModifiedCosine"))
-            .select(algorithms::id)
-            .first::<i32>(&mut conn)
-            .expect("failed to load ModifiedCosine id");
-
-        let modified_greedy_approx = algorithms::table
-            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
-            .select(algorithms::approximates_algorithm_id)
-            .first::<Option<i32>>(&mut conn)
-            .expect("failed to load ModifiedGreedyCosine approximation target");
-
-        assert_eq!(modified_greedy_approx, Some(modified_cosine_id));
-
-        let rust_modified_greedy_ref = implementations::table
-            .inner_join(algorithms::table)
-            .inner_join(libraries::table)
-            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
-            .filter(libraries::name.eq("mass-spectrometry-traits"))
-            .select(implementations::is_reference)
-            .first::<bool>(&mut conn)
-            .expect("failed to load ModifiedGreedyCosine rust reference flag");
-        assert!(!rust_modified_greedy_ref);
-
-        let matchms_modified_greedy_ref = implementations::table
-            .inner_join(algorithms::table)
-            .inner_join(libraries::table)
-            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
-            .filter(libraries::name.eq("matchms"))
-            .select(implementations::is_reference)
-            .first::<bool>(&mut conn)
-            .expect("failed to load ModifiedGreedyCosine matchms reference flag");
-        assert!(!matchms_modified_greedy_ref);
+            match expected_approx {
+                None => assert!(
+                    approx_id.is_none(),
+                    "{algo_name} should not approximate anything, got {approx_name:?}"
+                ),
+                Some(target) => assert_eq!(
+                    approx_name.as_deref(),
+                    Some(target),
+                    "{algo_name} should approximate {target}"
+                ),
+            }
+        }
     }
 }

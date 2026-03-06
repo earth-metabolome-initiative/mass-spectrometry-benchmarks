@@ -79,6 +79,32 @@ files = { glob = [
 ] }
 
 [[repos.hooks]]
+id = "python-ruff"
+name = "python ruff"
+entry = "bash -lc \"cd spectral-cosine-similarity && uv run --with ruff ruff check scripts\""
+language = "system"
+pass_filenames = false
+stages = ["pre-commit"]
+priority = 30
+files = { glob = [
+  "spectral-cosine-similarity/scripts/**/*.py",
+  "spectral-cosine-similarity/pyproject.toml",
+] }
+
+[[repos.hooks]]
+id = "python-mypy-strict"
+name = "python mypy strict"
+entry = "bash -lc \"cd spectral-cosine-similarity && uv run --with mypy mypy scripts\""
+language = "system"
+pass_filenames = false
+stages = ["pre-commit"]
+priority = 40
+files = { glob = [
+  "spectral-cosine-similarity/scripts/**/*.py",
+  "spectral-cosine-similarity/pyproject.toml",
+] }
+
+[[repos.hooks]]
 id = "rust-clippy-strict"
 name = "rust clippy strict"
 entry = "bash -lc \"cd spectral-cosine-similarity && cargo clippy --all-targets -- -D warnings\""

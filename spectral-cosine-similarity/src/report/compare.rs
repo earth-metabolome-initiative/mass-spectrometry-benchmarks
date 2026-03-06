@@ -3,7 +3,7 @@ use diesel::sql_query;
 use diesel::sql_types::{Double, Integer, Text};
 use diesel::sqlite::SqliteConnection;
 
-use super::types::algorithm_uses_match_count_parity;
+use super::render::algorithm_uses_match_count_parity;
 
 #[derive(QueryableByName)]
 #[allow(dead_code)]

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::process::{Command, Stdio};
-use std::result::Result as StdResult;
 use std::time::Instant;
 
 use diesel::prelude::*;
@@ -17,8 +16,6 @@ const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const GLOBAL_WARMUP_PAIR_SAMPLE: usize = 100;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
 
-type RunAlgoFn = fn(&mut SqliteConnection, &ComputeContext, &'static str) -> usize;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Preprocessing {
     None,
@@ -26,46 +23,17 @@ enum Preprocessing {
     MsEntropyClean,
 }
 
-struct RustAlgoSpec {
-    algorithm_name: &'static str,
-    preprocessing: Preprocessing,
-    run: RunAlgoFn,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AlgoKind {
+    HungarianCosine,
+    GreedyCosine,
+    LinearCosine,
+    ModifiedCosine,
+    ModifiedGreedyCosine,
+    ModifiedLinearCosine,
+    EntropyWeighted,
+    EntropyUnweighted,
 }
-
-macro_rules! define_algo_runner {
-    ($fn_name:ident, $builder:expr) => {
-        fn $fn_name(conn: &mut SqliteConnection, ctx: &ComputeContext, name: &'static str) -> usize {
-            compute_rust_algorithm(conn, ctx, name, |params| {
-                build_similarity_or_panic(name, params, || ($builder)(params))
-            })
-        }
-    };
-}
-
-define_algo_runner!(run_cosine_hungarian, |params: &ExperimentParams| {
-    HungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-});
-define_algo_runner!(run_cosine_greedy, |params: &ExperimentParams| {
-    GreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-});
-define_algo_runner!(run_linear_cosine, |params: &ExperimentParams| {
-    LinearCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-});
-define_algo_runner!(run_modified_cosine, |params: &ExperimentParams| {
-    ModifiedHungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-});
-define_algo_runner!(run_modified_greedy_cosine, |params: &ExperimentParams| {
-    ModifiedGreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-});
-define_algo_runner!(run_modified_linear_cosine, |params: &ExperimentParams| {
-    ModifiedLinearCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-});
-define_algo_runner!(run_entropy_weighted, |params: &ExperimentParams| {
-    LinearEntropy::new(params.mz_power, params.intensity_power, params.tolerance, true)
-});
-define_algo_runner!(run_entropy_unweighted, |params: &ExperimentParams| {
-    LinearEntropy::new(params.mz_power, params.intensity_power, params.tolerance, false)
-});
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
@@ -74,15 +42,15 @@ struct PythonAlgoSpec {
     library_name: &'static str,
 }
 
-const RUST_ALGO_SPECS: [RustAlgoSpec; 8] = [
-    RustAlgoSpec { algorithm_name: "CosineHungarian", preprocessing: Preprocessing::None, run: run_cosine_hungarian },
-    RustAlgoSpec { algorithm_name: "CosineGreedy", preprocessing: Preprocessing::None, run: run_cosine_greedy },
-    RustAlgoSpec { algorithm_name: "LinearCosine", preprocessing: Preprocessing::SiriusMerge, run: run_linear_cosine },
-    RustAlgoSpec { algorithm_name: "ModifiedCosine", preprocessing: Preprocessing::None, run: run_modified_cosine },
-    RustAlgoSpec { algorithm_name: "ModifiedGreedyCosine", preprocessing: Preprocessing::None, run: run_modified_greedy_cosine },
-    RustAlgoSpec { algorithm_name: "ModifiedLinearCosine", preprocessing: Preprocessing::SiriusMerge, run: run_modified_linear_cosine },
-    RustAlgoSpec { algorithm_name: "EntropySimilarityWeighted", preprocessing: Preprocessing::MsEntropyClean, run: run_entropy_weighted },
-    RustAlgoSpec { algorithm_name: "EntropySimilarityUnweighted", preprocessing: Preprocessing::MsEntropyClean, run: run_entropy_unweighted },
+const RUST_ALGO_SPECS: [(&str, Preprocessing, AlgoKind); 8] = [
+    ("CosineHungarian", Preprocessing::None, AlgoKind::HungarianCosine),
+    ("CosineGreedy", Preprocessing::None, AlgoKind::GreedyCosine),
+    ("LinearCosine", Preprocessing::SiriusMerge, AlgoKind::LinearCosine),
+    ("ModifiedCosine", Preprocessing::None, AlgoKind::ModifiedCosine),
+    ("ModifiedGreedyCosine", Preprocessing::None, AlgoKind::ModifiedGreedyCosine),
+    ("ModifiedLinearCosine", Preprocessing::SiriusMerge, AlgoKind::ModifiedLinearCosine),
+    ("EntropySimilarityWeighted", Preprocessing::MsEntropyClean, AlgoKind::EntropyWeighted),
+    ("EntropySimilarityUnweighted", Preprocessing::MsEntropyClean, AlgoKind::EntropyUnweighted),
 ];
 
 #[cfg(test)]
@@ -113,22 +81,7 @@ fn algorithm_cli_label(algorithm_name: &str, library_name: &str) -> String {
     format!("{algorithm_name} ({library_name})")
 }
 
-fn build_similarity_or_panic<T>(
-    algorithm_name: &str,
-    params: &ExperimentParams,
-    build: impl FnOnce() -> StdResult<T, SimilarityConfigError>,
-) -> T {
-    build().unwrap_or_else(|err| {
-        panic!("[compute] failed to build {algorithm_name} with params {params:?}: {err:?}")
-    })
-}
-
-struct ComputeContext {
-    experiments: Vec<Experiment>,
-    spectrum_ids: Vec<i32>,
-    spectra_map: HashMap<i32, GenericSpectrum<f64, f64>>,
-    id_pairs: Vec<(i32, i32)>,
-}
+type SpectraMap = HashMap<i32, GenericSpectrum<f64, f64>>;
 
 pub fn preflight_python_environment() {
     let uv_check = Command::new("uv")
@@ -191,8 +144,8 @@ pub fn run_with_python_runner<F>(
 ) where
     F: Fn(),
 {
-    let context = load_compute_context(conn, max_spectra, num_pairs);
-    run_rust_compute_passes(conn, &context);
+    let (experiments, spectra_map, id_pairs) = load_compute_context(conn, max_spectra, num_pairs);
+    run_rust_compute_passes(conn, &experiments, &spectra_map, &id_pairs);
 
     let python_impl_count = python_implementation_ids(conn).len() as u64;
     if python_impl_count > 0 {
@@ -241,7 +194,7 @@ fn load_compute_context(
     conn: &mut SqliteConnection,
     max_spectra: usize,
     num_pairs: usize,
-) -> ComputeContext {
+) -> (Vec<Experiment>, SpectraMap, Vec<(i32, i32)>) {
     let experiments = db::load_experiments(conn);
 
     let limit = i64::try_from(max_spectra).unwrap_or(i64::MAX);
@@ -252,7 +205,7 @@ fn load_compute_context(
         .expect("failed to load spectra");
 
     let spectrum_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
-    let spectra_map: HashMap<i32, GenericSpectrum<f64, f64>> = all_spectra
+    let spectra_map: SpectraMap = all_spectra
         .iter()
         .map(|s| (s.id, s.to_generic_spectrum()))
         .collect();
@@ -277,17 +230,14 @@ fn load_compute_context(
             .expect("failed to insert selected_pairs");
     }
 
-    ComputeContext {
-        experiments,
-        spectrum_ids,
-        spectra_map,
-        id_pairs,
-    }
+    (experiments, spectra_map, id_pairs)
 }
 
 fn compute_rust_algorithm<B, S>(
     conn: &mut SqliteConnection,
-    context: &ComputeContext,
+    experiments: &[Experiment],
+    spectra_map: &SpectraMap,
+    id_pairs: &[(i32, i32)],
     algorithm_name: &str,
     build_similarity: B,
 ) -> usize
@@ -296,12 +246,12 @@ where
     S: ScalarSimilarity<
         GenericSpectrum<f64, f64>,
         GenericSpectrum<f64, f64>,
-        Similarity = StdResult<(f64, usize), SimilarityComputationError>,
+        Similarity = std::result::Result<(f64, usize), SimilarityComputationError>,
     >,
 {
     let impl_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
     let algorithm_label = algorithm_cli_label(algorithm_name, RUST_LIBRARY_NAME);
-    let work_len = context.id_pairs.len() * context.experiments.len();
+    let work_len = id_pairs.len() * experiments.len();
 
     if work_len == 0 {
         eprintln!("[compute] {algorithm_label}: nothing to compute");
@@ -310,30 +260,22 @@ where
 
     eprintln!("[compute] {algorithm_label}: 0/{work_len}");
 
-    let mut batch: Vec<NewResult> = Vec::with_capacity(FLUSH_BATCH);
+    let mut batch: Vec<NewResult> = Vec::with_capacity(work_len);
     let mut total_done: usize = 0;
 
-    for exp in &context.experiments {
+    for exp in experiments {
         let params = exp.parse_params();
         let similarity = build_similarity(&params);
 
-        // Warmup once per (implementation, experiment).
-        let warmup_pairs: Vec<(i32, i32)> = context
-            .id_pairs
+        let warmup_pairs: Vec<(i32, i32)> = id_pairs
             .iter()
             .copied()
             .take(GLOBAL_WARMUP_PAIR_SAMPLE)
             .collect();
         for _ in 0..params.n_warmup {
             for (left_id, right_id) in &warmup_pairs {
-                let left = context
-                    .spectra_map
-                    .get(left_id)
-                    .expect("left spectrum not found");
-                let right = context
-                    .spectra_map
-                    .get(right_id)
-                    .expect("right spectrum not found");
+                let left = spectra_map.get(left_id).expect("left spectrum not found");
+                let right = spectra_map.get(right_id).expect("right spectrum not found");
                 let _ = black_box(similarity.similarity(black_box(left), black_box(right)))
                     .unwrap_or_else(|err| {
                         panic!(
@@ -345,15 +287,9 @@ where
             }
         }
 
-        for &(left_id, right_id) in &context.id_pairs {
-            let left = context
-                .spectra_map
-                .get(&left_id)
-                .expect("left spectrum not found");
-            let right = context
-                .spectra_map
-                .get(&right_id)
-                .expect("right spectrum not found");
+        for &(left_id, right_id) in id_pairs {
+            let left = spectra_map.get(&left_id).expect("left spectrum not found");
+            let right = spectra_map.get(&right_id).expect("right spectrum not found");
 
             let mut times_ns: Vec<u128> = Vec::with_capacity(params.n_reps as usize);
             let mut last_result = (0.0f64, 0usize);
@@ -394,10 +330,6 @@ where
 
             total_done += 1;
 
-            if batch.len() >= FLUSH_BATCH {
-                flush_results(conn, &mut batch);
-            }
-
             if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL) {
                 eprintln!("[compute] {algorithm_label}: {total_done}/{work_len}");
             }
@@ -409,9 +341,44 @@ where
     total_done
 }
 
-fn build_sirius_merged_context(context: &ComputeContext) -> ComputeContext {
-    let min_tolerance = context
-        .experiments
+fn run_algo(
+    conn: &mut SqliteConnection,
+    experiments: &[Experiment],
+    spectra_map: &SpectraMap,
+    id_pairs: &[(i32, i32)],
+    algorithm_name: &str,
+    kind: AlgoKind,
+) -> usize {
+    match kind {
+        AlgoKind::HungarianCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            HungarianCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build HungarianCosine")
+        }),
+        AlgoKind::GreedyCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            GreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build GreedyCosine")
+        }),
+        AlgoKind::LinearCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            LinearCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build LinearCosine")
+        }),
+        AlgoKind::ModifiedCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            ModifiedHungarianCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build ModifiedHungarianCosine")
+        }),
+        AlgoKind::ModifiedGreedyCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            ModifiedGreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build ModifiedGreedyCosine")
+        }),
+        AlgoKind::ModifiedLinearCosine => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            ModifiedLinearCosine::new(p.mz_power, p.intensity_power, p.tolerance).expect("failed to build ModifiedLinearCosine")
+        }),
+        AlgoKind::EntropyWeighted => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            LinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, true).expect("failed to build LinearEntropy weighted")
+        }),
+        AlgoKind::EntropyUnweighted => compute_rust_algorithm(conn, experiments, spectra_map, id_pairs, algorithm_name, |p| {
+            LinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, false).expect("failed to build LinearEntropy unweighted")
+        }),
+    }
+}
+
+fn build_sirius_merged_map(experiments: &[Experiment], base_map: &SpectraMap) -> SpectraMap {
+    let min_tolerance = experiments
         .iter()
         .map(|exp| exp.parse_params().tolerance)
         .fold(f64::INFINITY, f64::min);
@@ -419,73 +386,55 @@ fn build_sirius_merged_context(context: &ComputeContext) -> ComputeContext {
     let merger = SiriusMergeClosePeaks::new(min_tolerance)
         .expect("failed to build SiriusMergeClosePeaks from experiment tolerance");
 
-    let merged_map: HashMap<i32, GenericSpectrum<f64, f64>> = context
-        .spectra_map
+    base_map
         .iter()
         .map(|(&id, spectrum)| (id, merger.process(spectrum)))
-        .collect();
-
-    ComputeContext {
-        experiments: context.experiments.clone(),
-        spectrum_ids: context.spectrum_ids.clone(),
-        spectra_map: merged_map,
-        id_pairs: context.id_pairs.clone(),
-    }
+        .collect()
 }
 
-fn build_entropy_cleaned_context(context: &ComputeContext) -> ComputeContext {
+fn build_entropy_cleaned_map(base_map: &SpectraMap) -> SpectraMap {
     let cleaner = MsEntropyCleanSpectrum::<f64>::builder()
         .build()
         .expect("failed to build MsEntropyCleanSpectrum with default parameters");
 
-    let cleaned_map: HashMap<i32, GenericSpectrum<f64, f64>> = context
-        .spectra_map
+    base_map
         .iter()
         .map(|(&id, spectrum)| (id, cleaner.process(spectrum)))
-        .collect();
-
-    ComputeContext {
-        experiments: context.experiments.clone(),
-        spectrum_ids: context.spectrum_ids.clone(),
-        spectra_map: cleaned_map,
-        id_pairs: context.id_pairs.clone(),
-    }
+        .collect()
 }
 
 fn run_rust_compute_passes(
     conn: &mut SqliteConnection,
-    context: &ComputeContext,
+    experiments: &[Experiment],
+    spectra_map: &SpectraMap,
+    id_pairs: &[(i32, i32)],
 ) {
     eprintln!("[compute] Starting Rust algorithms");
 
     let any_sirius = RUST_ALGO_SPECS
         .iter()
-        .any(|s| s.preprocessing == Preprocessing::SiriusMerge);
+        .any(|&(_, prep, _)| prep == Preprocessing::SiriusMerge);
     let any_entropy = RUST_ALGO_SPECS
         .iter()
-        .any(|s| s.preprocessing == Preprocessing::MsEntropyClean);
-    let sirius_context = if any_sirius {
-        Some(build_sirius_merged_context(context))
+        .any(|&(_, prep, _)| prep == Preprocessing::MsEntropyClean);
+    let sirius_map = if any_sirius {
+        Some(build_sirius_merged_map(experiments, spectra_map))
     } else {
         None
     };
-    let entropy_context = if any_entropy {
-        Some(build_entropy_cleaned_context(context))
+    let entropy_map = if any_entropy {
+        Some(build_entropy_cleaned_map(spectra_map))
     } else {
         None
     };
 
-    for spec in RUST_ALGO_SPECS {
-        let effective_context = match spec.preprocessing {
-            Preprocessing::None => context,
-            Preprocessing::SiriusMerge => {
-                sirius_context.as_ref().expect("sirius context must exist")
-            }
-            Preprocessing::MsEntropyClean => {
-                entropy_context.as_ref().expect("entropy context must exist")
-            }
+    for &(algorithm_name, preprocessing, kind) in &RUST_ALGO_SPECS {
+        let effective_map = match preprocessing {
+            Preprocessing::None => spectra_map,
+            Preprocessing::SiriusMerge => sirius_map.as_ref().expect("sirius map must exist"),
+            Preprocessing::MsEntropyClean => entropy_map.as_ref().expect("entropy map must exist"),
         };
-        (spec.run)(conn, effective_context, spec.algorithm_name);
+        run_algo(conn, experiments, effective_map, id_pairs, algorithm_name, kind);
     }
 }
 

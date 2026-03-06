@@ -7,4 +7,23 @@ dependencies = [
     "matchms>=0.18",
     "ms-entropy>=1.4.0,<2",
     "numpy",
+    "tqdm",
 ]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+src = ["scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["scripts"]
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["matchms", "matchms.*", "ms_entropy", "tqdm"]
+ignore_missing_imports = true

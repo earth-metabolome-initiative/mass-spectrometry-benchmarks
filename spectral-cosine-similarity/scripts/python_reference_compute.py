@@ -12,9 +12,9 @@ from __future__ import annotations
 import argparse
 import sqlite3
 
-from python_ref import db_io
-from python_ref import runner
+from python_ref import db_io, runner
 from python_ref.algorithms import ALGORITHMS
+from python_ref.types import ComputeFn
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,7 +24,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def selected_algorithms(algorithm_name: str | None):
+def selected_algorithms(
+    algorithm_name: str | None,
+) -> list[tuple[str, str, ComputeFn]]:
     if algorithm_name is None:
         return ALGORITHMS
 

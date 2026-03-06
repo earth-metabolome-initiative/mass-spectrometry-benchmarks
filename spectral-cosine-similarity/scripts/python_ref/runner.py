@@ -2,27 +2,24 @@ from __future__ import annotations
 
 import math
 import sqlite3
-import sys
 import time
 
-from python_ref import db_io
-from python_ref.types import ComputeFn
-from python_ref.types import ExperimentData
-from python_ref.types import SpectrumData
+from tqdm import tqdm
 
-COMMIT_INTERVAL = 500
+from python_ref import db_io
+from python_ref.types import ComputeFn, ExperimentData, SpectrumData
+
 GLOBAL_WARMUP_PAIR_SAMPLE = 100
 
 
 def _validate_score(
-    score: object,
+    score: float,
     *,
     algorithm_label: str,
     left_id: int,
     right_id: int,
     experiment_id: int,
 ) -> float:
-    score = float(score)
     if not math.isfinite(score):
         raise RuntimeError(
             f"[python_ref] {algorithm_label}: non-finite score {score} for "
@@ -31,15 +28,15 @@ def _validate_score(
     if score < 0.0 or score > 1.000001:
         raise RuntimeError(
             f"[python_ref] {algorithm_label}: score out of range for "
-            f"(left_id={left_id}, right_id={right_id}, experiment_id={experiment_id}): {score}"
+            f"(left_id={left_id}, right_id={right_id}, "
+            f"experiment_id={experiment_id}): {score}"
         )
     if score > 1.0:
         score = 1.0
     return score
 
 
-def _validate_matches(matches: object) -> int:
-    matches = int(matches)
+def _validate_matches(matches: int) -> int:
     if matches < -1:
         raise RuntimeError(
             f"[python_ref] invalid matches value {matches}; expected >= -1"
@@ -63,12 +60,9 @@ def run_algorithm(
     if total_work == 0:
         return 0
 
-    uncommitted = 0
-    total_done = 0
     algo_label = f"{algorithm_name} ({library_name})"
-    print(f"[{algo_label}] 0/{total_work}", file=sys.stderr, end="\r")
 
-    for experiment in experiments:
+    for experiment in tqdm(experiments, desc=algo_label, unit="exp"):
         params = experiment.params
         n_warmup = int(params["n_warmup"])
         n_reps = int(params["n_reps"])
@@ -81,7 +75,7 @@ def run_algorithm(
                 right_spec = spectra[right_id]
                 compute_once(left_spec, right_spec, params)
 
-        for left_id, right_id in id_pairs:
+        for left_id, right_id in tqdm(id_pairs, desc="pairs", leave=False, unit="pair"):
             left_spec = spectra[left_id]
             right_spec = spectra[right_id]
 
@@ -116,15 +110,5 @@ def run_algorithm(
                 median_time_us=median_us,
             )
 
-            uncommitted += 1
-            total_done += 1
-            if uncommitted >= COMMIT_INTERVAL:
-                conn.commit()
-                uncommitted = 0
-
-            if total_done == total_work or total_done % 5000 == 0:
-                print(f"[{algo_label}] {total_done}/{total_work}", file=sys.stderr, end="\r")
-
     conn.commit()
-    print(f"[{algo_label}] {total_done}/{total_work} done", file=sys.stderr)
     return total_work

@@ -36,7 +36,7 @@ mod tests {
     #[test]
     fn flat_index_to_pair_covers_full_triangle() {
         let ids = [1, 2, 3];
-        let expected = vec![
+        let expected = [
             (1, 1), // k=0
             (1, 2), // k=1
             (2, 2), // k=2

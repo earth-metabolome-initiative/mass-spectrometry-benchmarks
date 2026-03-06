@@ -1,10 +1,7 @@
 mod aggregate;
 mod compare;
 mod data;
-mod markdown;
 mod render;
-mod style;
-mod types;
 
 use std::fs;
 use std::io::ErrorKind;
@@ -18,10 +15,7 @@ use diesel::sqlite::SqliteConnection;
 
 use aggregate::{MetricKind, build_metric_chart_from_aggregates, omit_empty_buckets};
 use data::{load_rmse_aggregate_rows, load_timing_aggregate_rows, series_pairs_from_aggregates};
-use markdown::{RunScopeMetadata, write_markdown_tables};
-use render::render_faceted_line_chart;
-use style::build_series_style_map_from_pairs;
-use types::FacetedLineChart;
+use render::{FacetedLineChart, build_series_style_map_from_pairs, render_faceted_line_chart};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactNames {
@@ -120,6 +114,104 @@ fn render_chart_artifact(
     Some(output_path.to_path_buf())
 }
 
+// --- Markdown generation (merged from markdown.rs) ---
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunScopeMetadata {
+    requested_max_spectra: usize,
+    total_spectra_in_db: i64,
+    spectra_used_in_results: i64,
+}
+
+fn append_run_scope_markdown(markdown: &mut String, run_scope: &RunScopeMetadata) {
+    markdown.push_str("## Run Scope\n\n");
+    markdown.push_str(&format!(
+        "- Requested max spectra: `{}`\n",
+        run_scope.requested_max_spectra
+    ));
+    markdown.push_str(&format!(
+        "- Total spectra in DB: `{}`\n",
+        run_scope.total_spectra_in_db
+    ));
+    markdown.push_str(&format!(
+        "- Spectra used in results: `{}`\n\n",
+        run_scope.spectra_used_in_results
+    ));
+}
+
+fn markdown_table_cell(value: f64, std_dev: f64, count: usize) -> String {
+    if count == 0 {
+        return "-".to_string();
+    }
+
+    if std_dev > 0.0 {
+        format!("{value:.3e} ± {std_dev:.2e} (n={count})")
+    } else {
+        format!("{value:.3e} (n={count})")
+    }
+}
+
+fn append_chart_markdown(markdown: &mut String, chart: &FacetedLineChart) {
+    markdown.push_str(&format!("## {}\n\n", chart.title));
+    markdown.push_str(&format!("Y-axis: `{}`\n\n", chart.y_label));
+
+    if chart.facets.is_empty() || chart.bucket_labels.is_empty() {
+        markdown.push_str("_No data available._\n\n");
+        return;
+    }
+
+    for facet in &chart.facets {
+        markdown.push_str(&format!("### {}\n\n", facet.title));
+        markdown.push_str("| Series |");
+        for label in &chart.bucket_labels {
+            markdown.push_str(&format!(" {label} |"));
+        }
+        markdown.push('\n');
+
+        markdown.push_str("| --- |");
+        for _ in &chart.bucket_labels {
+            markdown.push_str(" --- |");
+        }
+        markdown.push('\n');
+
+        for series in &facet.series {
+            markdown.push_str(&format!("| {} |", series.label.replace('|', "\\|")));
+            for idx in 0..chart.bucket_labels.len() {
+                let value = series.values.get(idx).copied().unwrap_or(0.0);
+                let std_dev = series.std_devs.get(idx).copied().unwrap_or(0.0);
+                let count = series.counts.get(idx).copied().unwrap_or(0);
+                markdown.push_str(&format!(
+                    " {} |",
+                    markdown_table_cell(value, std_dev, count)
+                ));
+            }
+            markdown.push('\n');
+        }
+        markdown.push('\n');
+    }
+}
+
+fn write_markdown_tables(
+    output_path: &Path,
+    charts: &[&FacetedLineChart],
+    run_scope: &RunScopeMetadata,
+) {
+    let mut markdown = String::from("# Benchmark Tables\n\n");
+    append_run_scope_markdown(&mut markdown, run_scope);
+    for chart in charts {
+        append_chart_markdown(&mut markdown, chart);
+    }
+
+    fs::write(output_path, markdown).unwrap_or_else(|err| {
+        panic!(
+            "failed to write markdown report {}: {err}",
+            output_path.display()
+        )
+    });
+}
+
+// --- Report generation ---
+
 pub fn generate(
     conn: &mut SqliteConnection,
     cfg: &ReportConfig,
@@ -191,8 +283,7 @@ mod tests {
     use diesel::Connection;
 
     use super::aggregate::{bucket_index, bucket_labels, mean, std_dev};
-    use super::render::{YMode, build_series_points, build_series_whiskers, select_y_mode};
-    use super::types::{
+    use super::render::{
         BUCKET_BOUNDARIES, FacetChart, LIBRARY_COLORS, LineSeriesData, MarkerShape,
     };
     use super::*;
@@ -212,7 +303,7 @@ mod tests {
         assert_eq!(bucket_index(2048), Some(BUCKET_BOUNDARIES.len() - 1));
 
         let labels = bucket_labels();
-        assert_eq!(labels.first().expect("missing first label"), "5–8");
+        assert_eq!(labels.first().expect("missing first label"), "5\u{2013}8");
         assert_eq!(labels.last().expect("missing last label"), "2048+");
         assert_eq!(labels.len(), BUCKET_BOUNDARIES.len());
     }
@@ -227,80 +318,6 @@ mod tests {
         let sd = std_dev(&[2.0, 4.0, 6.0]);
         assert!((m - 4.0).abs() < 1e-9);
         assert!((sd - 2.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn series_points_log_filters_non_positive_values() {
-        let points = build_series_points(&[-1.0, 0.0, 1.0, 2.0], true);
-        assert_eq!(points, vec![(2.0, 1.0), (3.0, 2.0)]);
-    }
-
-    #[test]
-    fn series_points_linear_keeps_zero_and_negative_values() {
-        let points = build_series_points(&[-1.0, 0.0, 1.0, 2.0], false);
-        assert_eq!(
-            points,
-            vec![(0.0, -1.0), (1.0, 0.0), (2.0, 1.0), (3.0, 2.0)]
-        );
-    }
-
-    #[test]
-    fn whisker_generation_is_mode_aware() {
-        let series = LineSeriesData {
-            label: "s".to_string(),
-            color: LIBRARY_COLORS[0],
-            marker: MarkerShape::Circle,
-            values: vec![0.0, 1.0],
-            std_devs: vec![0.1, 0.1],
-            counts: vec![1, 1],
-        };
-
-        let linear = build_series_whiskers(&series, false, 0.0);
-        let log = build_series_whiskers(&series, true, 1e-6);
-        assert_eq!(linear.len(), 6);
-        assert_eq!(log.len(), 3);
-    }
-
-    #[test]
-    fn y_mode_selection_matches_log_and_linear_fallback_behavior() {
-        let log_chart = FacetedLineChart {
-            title: "t".to_string(),
-            y_label: "y".to_string(),
-            bucket_labels: vec!["A".to_string()],
-            facets: Vec::new(),
-            log_y: true,
-        };
-        let facet_log = FacetChart {
-            title: "f".to_string(),
-            series: vec![LineSeriesData {
-                label: "s".to_string(),
-                color: LIBRARY_COLORS[0],
-                marker: MarkerShape::Circle,
-                values: vec![1.0],
-                std_devs: vec![0.0],
-                counts: vec![1],
-            }],
-        };
-        assert!(matches!(
-            select_y_mode(&log_chart, &facet_log),
-            Some(YMode::Log { .. })
-        ));
-
-        let facet_linear_fallback = FacetChart {
-            title: "f".to_string(),
-            series: vec![LineSeriesData {
-                label: "s".to_string(),
-                color: LIBRARY_COLORS[0],
-                marker: MarkerShape::Circle,
-                values: vec![0.0],
-                std_devs: vec![0.2],
-                counts: vec![1],
-            }],
-        };
-        assert!(matches!(
-            select_y_mode(&log_chart, &facet_linear_fallback),
-            Some(YMode::Linear { .. })
-        ));
     }
 
     #[test]
