@@ -24,9 +24,10 @@ from python_ref.algorithms import entropy_unweighted
 from python_ref.algorithms import entropy_weighted
 from python_ref.algorithms import modified_greedy_cosine
 
-def parse_cli_args(argv: list[str]) -> tuple[str, int | None, str | None]:
+def parse_cli_args(argv: list[str]) -> tuple[str, int | None, int | None, str | None]:
     db_path = argv[1] if len(argv) > 1 else "fixtures/benchmark.db"
     max_spectra: int | None = None
+    num_pairs: int | None = None
     selected_algorithm: str | None = None
     extra_positional: list[str] = []
 
@@ -41,6 +42,16 @@ def parse_cli_args(argv: list[str]) -> tuple[str, int | None, str | None]:
             continue
         if token.startswith("--max-spectra="):
             max_spectra = int(token.split("=", 1)[1])
+            i += 1
+            continue
+        if token == "--num-pairs":
+            if i + 1 >= len(argv):
+                raise SystemExit("missing value for --num-pairs")
+            num_pairs = int(argv[i + 1])
+            i += 2
+            continue
+        if token.startswith("--num-pairs="):
+            num_pairs = int(token.split("=", 1)[1])
             i += 1
             continue
         if token == "--algorithm":
@@ -78,10 +89,10 @@ def parse_cli_args(argv: list[str]) -> tuple[str, int | None, str | None]:
         elif len(extra_positional) > 1:
             raise SystemExit("too many positional arguments")
 
-    return db_path, max_spectra, selected_algorithm
+    return db_path, max_spectra, num_pairs, selected_algorithm
 
 
-DB_PATH, MAX_SPECTRA, SELECTED_ALGORITHM = parse_cli_args(sys.argv)
+DB_PATH, MAX_SPECTRA, NUM_PAIRS, SELECTED_ALGORITHM = parse_cli_args(sys.argv)
 
 ALGORITHMS = [
     ("CosineHungarian", "matchms", cosine_hungarian.compute_once),
@@ -117,7 +128,11 @@ def main() -> None:
         cur = conn.cursor()
         experiments = db_io.load_experiments(cur)
         spectra = db_io.load_spectra(cur, max_spectra=MAX_SPECTRA)
-        id_pairs = workload.generate_pairs(list(spectra.keys()))
+        spectrum_ids = list(spectra.keys())
+        if NUM_PAIRS is not None:
+            id_pairs = list(workload.sample_pairs(spectrum_ids, NUM_PAIRS))
+        else:
+            id_pairs = workload.generate_pairs(spectrum_ids)
 
         for algo_name, library_name, compute_once in selected_algorithms(
             SELECTED_ALGORITHM

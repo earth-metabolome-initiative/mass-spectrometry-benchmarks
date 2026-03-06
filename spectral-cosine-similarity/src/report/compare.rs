@@ -9,7 +9,7 @@ use super::types::algorithm_uses_match_count_parity;
 
 fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
     if let Some(progress) = progress.as_deref_mut() {
-        progress.set_substep(message);
+        progress.set_message(message);
     } else {
         eprintln!("{message}");
     }

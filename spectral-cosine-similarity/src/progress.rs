@@ -4,8 +4,7 @@ pub const FIXED_STAGE_UNITS: u64 = 1;
 pub const NON_COMPUTE_STAGE_COUNT: u64 = 4;
 
 pub trait StageProgress {
-    fn set_substep(&mut self, message: &str);
-    fn clear_substep(&mut self);
+    fn set_message(&mut self, message: &str);
     fn inc(&mut self, units: u64);
 }
 
@@ -115,7 +114,7 @@ impl StageHandle<'_> {
         if remaining > 0 {
             self.inc(remaining);
         }
-        self.clear_substep();
+        self.set_message("");
         self.pipeline
             .overall
             .set_message(format!("[{} done]", self.stage_name));
@@ -124,12 +123,8 @@ impl StageHandle<'_> {
 }
 
 impl StageProgress for StageHandle<'_> {
-    fn set_substep(&mut self, message: &str) {
+    fn set_message(&mut self, message: &str) {
         self.pipeline.substep.set_message(message.to_string());
-    }
-
-    fn clear_substep(&mut self) {
-        self.pipeline.substep.set_message(String::new());
     }
 
     fn inc(&mut self, units: u64) {

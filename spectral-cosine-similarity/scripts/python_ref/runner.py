@@ -7,10 +7,10 @@ import time
 from tqdm import tqdm
 
 from python_ref import db_io
-from python_ref import workload
 from python_ref.types import ComputeFn
 from python_ref.types import ExperimentData
 from python_ref.types import SpectrumData
+from python_ref.types import WorkItem
 
 COMMIT_INTERVAL = 500
 GLOBAL_WARMUP_PAIR_SAMPLE = 100
@@ -60,8 +60,13 @@ def run_algorithm(
     compute_once: ComputeFn,
 ) -> int:
     cur = conn.cursor()
-    existing = db_io.get_existing_keys(cur, implementation_id)
-    work = workload.select_missing_work(id_pairs, experiments, existing)
+
+    work: list[WorkItem] = []
+    for left_id, right_id in id_pairs:
+        for experiment in experiments:
+            work.append(
+                WorkItem(left_id=left_id, right_id=right_id, experiment=experiment)
+            )
 
     if not work:
         return 0

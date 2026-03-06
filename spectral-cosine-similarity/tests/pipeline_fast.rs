@@ -7,7 +7,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 use spectral_cosine_similarity::schema::{experiments, implementations, results, spectra};
-use spectral_cosine_similarity::{compute, report};
+use spectral_cosine_similarity::{compute, db, report};
 
 mod common;
 
@@ -20,11 +20,10 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let db_path = test_db.db_path.to_string_lossy().to_string();
-    let uv_cache_for_first_run = uv_cache.clone();
-    compute::run_with_matchms(&mut test_db.conn, Some(3), move |_| {
+    compute::run_with_python_runner(&mut test_db.conn, Some(3), None, move |_, _| {
         let status = Command::new("uv")
             .current_dir(&manifest_dir)
-            .env("UV_CACHE_DIR", &uv_cache_for_first_run)
+            .env("UV_CACHE_DIR", &uv_cache)
             .args([
                 "run",
                 "python3",
@@ -37,7 +36,7 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
             status.success(),
             "python reference compute script failed: {status}"
         );
-    });
+    }, None);
 
     let output_dir = TempDir::new().expect("failed to create temporary output directory");
     let report_config = report::ReportConfig {
@@ -69,35 +68,47 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
 
     assert_eq!(spectra_count, 3);
     assert_eq!(experiments_count, 1);
-    assert_eq!(implementations_count, 11);
+    assert_eq!(implementations_count, 13);
     let n_pairs = spectra_count * (spectra_count + 1) / 2;
     let expected_results = n_pairs * experiments_count * implementations_count;
     assert_eq!(results_count, expected_results);
+}
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let db_path = test_db.db_path.to_string_lossy().to_string();
-    let uv_cache_for_second_run = uv_cache.clone();
-    compute::run_with_matchms(&mut test_db.conn, Some(3), move |_| {
-        let status = Command::new("uv")
-            .current_dir(&manifest_dir)
-            .env("UV_CACHE_DIR", &uv_cache_for_second_run)
-            .args([
-                "run",
-                "python3",
-                "scripts/python_reference_compute.py",
-                &db_path,
-            ])
-            .status()
-            .expect("failed to run python reference compute script");
-        assert!(
-            status.success(),
-            "python reference compute script failed: {status}"
-        );
-    });
+#[test]
+fn compute_honors_max_spectra_when_db_contains_more_rows() {
+    let mut test_db = common::TestDb::new();
+    common::prepare_small_dataset(&mut test_db.conn, 5);
 
-    let results_count_after_rerun = results::table
+    compute::run_with_python_runner(&mut test_db.conn, Some(3), None, |_, _| {}, None);
+
+    let experiments_count = experiments::table
         .select(count_star())
         .first::<i64>(&mut test_db.conn)
-        .expect("failed to count results after rerun");
-    assert_eq!(results_count_after_rerun, expected_results);
+        .expect("failed to count experiments");
+    let limited_spectra: i64 = 3;
+    let n_pairs = limited_spectra * (limited_spectra + 1) / 2;
+    let expected_rust_rows = n_pairs * experiments_count;
+
+    for algorithm_name in [
+        "CosineHungarian",
+        "CosineGreedy",
+        "LinearCosine",
+        "ModifiedCosine",
+        "ModifiedGreedyCosine",
+        "ModifiedLinearCosine",
+        "EntropySimilarityWeighted",
+        "EntropySimilarityUnweighted",
+    ] {
+        let rust_impl_id = db::get_implementation_id(
+            &mut test_db.conn,
+            algorithm_name,
+            "mass-spectrometry-traits",
+        );
+        let rows = results::table
+            .filter(results::implementation_id.eq(rust_impl_id))
+            .select(count_star())
+            .first::<i64>(&mut test_db.conn)
+            .expect("failed to count rust results for limited run");
+        assert_eq!(rows, expected_rust_rows);
+    }
 }

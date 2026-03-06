@@ -73,18 +73,6 @@ def load_spectra(
     return spectra
 
 
-def get_existing_keys(cur: sqlite3.Cursor, implementation_id: int) -> set[tuple[int, int, int]]:
-    cur.execute(
-        """
-        SELECT left_id, right_id, experiment_id
-        FROM results
-        WHERE implementation_id = ?
-        ORDER BY left_id ASC, right_id ASC, experiment_id ASC
-        """,
-        (implementation_id,),
-    )
-    return {(int(row[0]), int(row[1]), int(row[2])) for row in cur.fetchall()}
-
 
 def insert_result(
     cur: sqlite3.Cursor,

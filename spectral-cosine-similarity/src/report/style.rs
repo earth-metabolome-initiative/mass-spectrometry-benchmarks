@@ -1,13 +1,6 @@
 use std::collections::HashMap;
 
-#[cfg(test)]
-use super::types::ResultRow;
 use super::types::{LIBRARY_COLORS, MarkerShape, SeriesStyle};
-
-#[cfg(test)]
-pub(crate) fn series_label(algo: &str, lib: &str) -> String {
-    format!("{algo} ({lib})")
-}
 
 fn marker_for_library_index(index: usize) -> MarkerShape {
     match index % 3 {
@@ -29,18 +22,6 @@ fn color_for_series_index(index: usize) -> plotters::style::RGBColor {
         (40 + ((57 * i) % 180)) as u8,
         (40 + ((137 * i) % 180)) as u8,
     )
-}
-
-#[cfg(test)]
-pub(crate) fn build_series_style_map(data: &[ResultRow]) -> HashMap<String, SeriesStyle> {
-    let mut series_pairs: Vec<(String, String)> = data
-        .iter()
-        .map(|r| (series_label(&r.algo_name, &r.lib_name), r.lib_name.clone()))
-        .collect();
-    series_pairs.sort();
-    series_pairs.dedup();
-
-    build_series_style_map_from_pairs(&series_pairs)
 }
 
 pub(crate) fn build_series_style_map_from_pairs(

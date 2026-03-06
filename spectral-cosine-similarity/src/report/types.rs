@@ -2,8 +2,6 @@ use plotters::prelude::RGBColor;
 
 pub(crate) const BUCKET_BOUNDARIES: &[i32] = &[5, 9, 17, 33, 65, 129, 257, 513, 1024, 2048];
 pub(crate) const RMSE_LOG_FLOOR: f64 = 1e-16;
-#[cfg(test)]
-pub(crate) const MSE_LOG_FLOOR: f64 = RMSE_LOG_FLOOR;
 
 pub(crate) const LIBRARY_COLORS: [RGBColor; 11] = [
     RGBColor(82, 154, 220),  // pastel blue
@@ -18,27 +16,6 @@ pub(crate) const LIBRARY_COLORS: [RGBColor; 11] = [
     RGBColor(145, 185, 102), // pastel lime
     RGBColor(214, 169, 0),   // goldenrod (high contrast fallback replacement)
 ];
-
-#[cfg(test)]
-#[derive(Clone, Debug)]
-pub(crate) struct AlgorithmReference {
-    pub(crate) implementation_id: i32,
-    pub(crate) label: String,
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug)]
-pub(crate) struct ResultRow {
-    pub(crate) implementation_id: i32,
-    pub(crate) is_reference: bool,
-    pub(crate) score: f64,
-    pub(crate) median_time_us: f64,
-    pub(crate) algo_name: String,
-    pub(crate) lib_name: String,
-    pub(crate) left_id: i32,
-    pub(crate) right_id: i32,
-    pub(crate) experiment_id: i32,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MarkerShape {

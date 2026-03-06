@@ -64,7 +64,7 @@ fn mgf_sources() -> Vec<(&'static str, &'static str)> {
 
 fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
     if let Some(p) = progress.as_deref_mut() {
-        p.set_substep(message);
+        p.set_message(message);
     } else {
         eprintln!("{message}");
     }

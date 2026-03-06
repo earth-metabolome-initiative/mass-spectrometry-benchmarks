@@ -1,16 +1,9 @@
-#[cfg(test)]
-use std::collections::HashMap;
-
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{BigInt, Double, Integer, Text};
 use diesel::sqlite::SqliteConnection;
 
-#[cfg(test)]
-use super::style::series_label;
 use super::types::{AggregatedSeriesPoint, RMSE_LOG_FLOOR};
-#[cfg(test)]
-use super::types::{AlgorithmReference, ResultRow};
 
 #[derive(Debug, QueryableByName)]
 struct AggregatedMetricRow {
@@ -201,60 +194,4 @@ pub(crate) fn series_pairs_from_aggregates(
     pairs.sort();
     pairs.dedup();
     pairs
-}
-
-#[cfg(test)]
-pub(crate) fn algorithm_references(
-    data: &[ResultRow],
-    canonical_algorithm_map: &HashMap<String, String>,
-) -> HashMap<String, AlgorithmReference> {
-    let mut canonical_refs: HashMap<String, AlgorithmReference> = HashMap::new();
-
-    for row in data.iter().filter(|r| r.is_reference) {
-        let canonical_name = canonical_algorithm_map
-            .get(&row.algo_name)
-            .map(String::as_str)
-            .unwrap_or(&row.algo_name);
-
-        // Only canonical algorithms define canonical references.
-        if row.algo_name != canonical_name {
-            continue;
-        }
-
-        let label = series_label(&row.algo_name, &row.lib_name);
-        match canonical_refs.entry(canonical_name.to_string()) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(AlgorithmReference {
-                    implementation_id: row.implementation_id,
-                    label,
-                });
-            }
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                if entry.get().implementation_id != row.implementation_id {
-                    panic!(
-                        "canonical algorithm '{}' has multiple reference implementations in results",
-                        canonical_name
-                    );
-                }
-            }
-        }
-    }
-
-    let mut refs: HashMap<String, AlgorithmReference> = HashMap::new();
-    let mut algorithms: Vec<String> = data.iter().map(|r| r.algo_name.clone()).collect();
-    algorithms.sort();
-    algorithms.dedup();
-
-    for algorithm_name in algorithms {
-        let canonical_name = canonical_algorithm_map
-            .get(&algorithm_name)
-            .map(String::as_str)
-            .unwrap_or(&algorithm_name);
-
-        if let Some(reference) = canonical_refs.get(canonical_name) {
-            refs.insert(algorithm_name, reference.clone());
-        }
-    }
-
-    refs
 }

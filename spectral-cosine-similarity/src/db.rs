@@ -1,6 +1,5 @@
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Text};
 use diesel::sqlite::SqliteConnection;
 use std::path::Path;
 
@@ -25,19 +24,7 @@ const PARAM_SETS: [(f64, f64, f64); 1] = [
     (0.01, 0.0, 1.0), // single benchmark default
 ];
 
-#[derive(QueryableByName)]
-struct TableInfoRow {
-    #[diesel(sql_type = Text)]
-    name: String,
-}
-
-#[derive(QueryableByName)]
-struct CountRow {
-    #[diesel(sql_type = BigInt)]
-    n: i64,
-}
-
-pub fn db_path(_max_spectra: Option<usize>) -> &'static str {
+pub fn db_path() -> &'static str {
     DB_PATH
 }
 
@@ -59,8 +46,8 @@ fn apply_sqlite_pragmas(conn: &mut SqliteConnection) {
         .expect("failed to set PRAGMA ignore_check_constraints");
 }
 
-pub fn establish_connection(max_spectra: Option<usize>) -> SqliteConnection {
-    let path = db_path(max_spectra);
+pub fn establish_connection() -> SqliteConnection {
+    let path = DB_PATH;
     let mut conn = SqliteConnection::establish(path)
         .unwrap_or_else(|e| panic!("Error connecting to {path}: {e}"));
     apply_sqlite_pragmas(&mut conn);
@@ -78,28 +65,14 @@ pub fn establish_connection_at(path: &Path) -> SqliteConnection {
 pub fn initialize(conn: &mut SqliteConnection) {
     apply_sqlite_pragmas(conn);
 
-    // Run schema.sql (all CREATE IF NOT EXISTS, so idempotent)
     for statement in SCHEMA_SQL.split(';') {
         let trimmed = statement.trim();
         if !trimmed.is_empty()
             && let Err(e) = sql_query(trimmed).execute(conn)
         {
-            let err_msg = e.to_string();
-            let is_legacy_reference_index_statement = trimmed
-                .contains("idx_implementations_one_reference_per_algorithm")
-                && err_msg.contains("no such column: is_reference");
-            let is_legacy_topology_view_statement = trimmed.contains("v_implementation_topology")
-                && (err_msg.contains("no such column: i.is_reference")
-                    || err_msg.contains("no such column: a.approximates_algorithm_id"));
-
-            if !is_legacy_reference_index_statement && !is_legacy_topology_view_statement {
-                panic!("Failed to execute schema statement: {e}\n{trimmed}");
-            }
+            panic!("Failed to execute schema statement: {e}\n{trimmed}");
         }
     }
-    ensure_algorithms_approximation_schema(conn);
-    ensure_implementations_reference_schema(conn);
-    ensure_spectra_hash_schema(conn);
 
     // Seed algorithms (implementation-agnostic)
     let cosine_hungarian_id = ensure_algorithm(
@@ -128,17 +101,52 @@ pub fn initialize(conn: &mut SqliteConnection) {
         "EntropySimilarityUnweighted",
         Some("Unweighted spectral entropy similarity"),
     );
+    let linear_cosine_id = ensure_algorithm(
+        conn,
+        "LinearCosine",
+        Some("Linear-time cosine similarity for well-separated spectra"),
+    );
+    let modified_linear_cosine_id = ensure_algorithm(
+        conn,
+        "ModifiedLinearCosine",
+        Some("Linear-time modified cosine similarity for well-separated spectra"),
+    );
     set_algorithm_approximation(conn, cosine_hungarian_id, None);
     set_algorithm_approximation(conn, cosine_greedy_id, Some(cosine_hungarian_id));
+    set_algorithm_approximation(conn, linear_cosine_id, Some(cosine_hungarian_id));
     set_algorithm_approximation(conn, modified_cosine_id, None);
     set_algorithm_approximation(conn, modified_greedy_cosine_id, Some(modified_cosine_id));
+    set_algorithm_approximation(conn, modified_linear_cosine_id, Some(modified_cosine_id));
     set_algorithm_approximation(conn, entropy_weighted_id, None);
     set_algorithm_approximation(conn, entropy_unweighted_id, None);
 
     // Seed libraries
-    let rust_lib_id = ensure_rust_library(conn);
-    let matchms_lib_id = ensure_matchms_library(conn);
-    let ms_entropy_lib_id = ensure_ms_entropy_library(conn);
+    let rust_version = rust_lib_version();
+    let rust_git_commit = rust_lib_git_commit();
+    let rust_lib_id = ensure_library(
+        conn,
+        RUST_LIB_NAME,
+        &rust_version,
+        rust_git_commit.as_deref(),
+        Some(RUST_LIB_GIT_URL),
+        "rust",
+    );
+    let matchms_lib_id = ensure_library(
+        conn,
+        MATCHMS_LIB_NAME,
+        &python_package_version("matchms"),
+        None,
+        Some("https://github.com/matchms/matchms"),
+        "python",
+    );
+    let ms_entropy_lib_id = ensure_library(
+        conn,
+        MS_ENTROPY_LIB_NAME,
+        &python_package_version("ms_entropy"),
+        None,
+        Some("https://github.com/YuanyueLi/MSEntropy"),
+        "python",
+    );
 
     // Seed implementations (same algorithm can have multiple implementations)
     ensure_implementation(conn, cosine_hungarian_id, rust_lib_id, false);
@@ -152,9 +160,10 @@ pub fn initialize(conn: &mut SqliteConnection) {
     ensure_implementation(conn, entropy_weighted_id, ms_entropy_lib_id, true);
     ensure_implementation(conn, entropy_unweighted_id, rust_lib_id, false);
     ensure_implementation(conn, entropy_unweighted_id, ms_entropy_lib_id, true);
+    ensure_implementation(conn, linear_cosine_id, rust_lib_id, false);
+    ensure_implementation(conn, modified_linear_cosine_id, rust_lib_id, false);
 
     // Seed experiments
-    let mut allowed_experiment_ids = Vec::with_capacity(PARAM_SETS.len());
     for (tolerance, mz_power, intensity_power) in PARAM_SETS {
         let params = ExperimentParams {
             tolerance,
@@ -163,123 +172,8 @@ pub fn initialize(conn: &mut SqliteConnection) {
             n_warmup: N_WARMUP,
             n_reps: N_REPS,
         };
-        allowed_experiment_ids.push(ensure_experiment(conn, &params));
+        ensure_experiment(conn, &params);
     }
-
-    prune_experiments_to_allowed(conn, &allowed_experiment_ids);
-}
-
-fn table_has_column(conn: &mut SqliteConnection, table: &str, column: &str) -> bool {
-    let pragma = format!("PRAGMA table_info({table})");
-    let rows: Vec<TableInfoRow> = sql_query(pragma)
-        .load(conn)
-        .unwrap_or_else(|e| panic!("failed to inspect table '{table}': {e}"));
-    rows.iter().any(|r| r.name == column)
-}
-
-fn algorithms_has_column(conn: &mut SqliteConnection, column: &str) -> bool {
-    table_has_column(conn, "algorithms", column)
-}
-
-fn implementations_has_column(conn: &mut SqliteConnection, column: &str) -> bool {
-    table_has_column(conn, "implementations", column)
-}
-
-fn ensure_algorithms_approximation_schema(conn: &mut SqliteConnection) {
-    if !algorithms_has_column(conn, "approximates_algorithm_id") {
-        sql_query(
-            "ALTER TABLE algorithms
-             ADD COLUMN approximates_algorithm_id INTEGER REFERENCES algorithms(id)",
-        )
-        .execute(conn)
-        .expect("failed to add algorithms.approximates_algorithm_id column");
-    }
-}
-
-fn ensure_implementations_reference_schema(conn: &mut SqliteConnection) {
-    if !implementations_has_column(conn, "is_reference") {
-        sql_query(
-            "ALTER TABLE implementations
-             ADD COLUMN is_reference INTEGER NOT NULL DEFAULT 0 CHECK (is_reference IN (0, 1))",
-        )
-        .execute(conn)
-        .expect("failed to add implementations.is_reference column");
-    }
-
-    sql_query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_implementations_one_reference_per_algorithm
-         ON implementations(algorithm_id)
-         WHERE is_reference = 1",
-    )
-    .execute(conn)
-    .expect("failed to create reference uniqueness index");
-
-    let duplicate_refs: CountRow = sql_query(
-        "SELECT COUNT(*) AS n
-         FROM (
-             SELECT algorithm_id
-             FROM implementations
-             WHERE is_reference = 1
-             GROUP BY algorithm_id
-             HAVING COUNT(*) > 1
-         )",
-    )
-    .get_result(conn)
-    .expect("failed to validate implementations reference uniqueness");
-    if duplicate_refs.n > 0 {
-        panic!(
-            "found {} algorithms with multiple reference implementations; \
-repair the data before continuing",
-            duplicate_refs.n
-        );
-    }
-}
-
-fn ensure_spectra_hash_schema(conn: &mut SqliteConnection) {
-    if !table_has_column(conn, "spectra", "spectrum_hash") {
-        sql_query("ALTER TABLE spectra ADD COLUMN spectrum_hash TEXT")
-            .execute(conn)
-            .expect("failed to add spectra.spectrum_hash column");
-    }
-
-    sql_query(
-        "UPDATE spectra
-         SET spectrum_hash = printf('__legacy_spectrum_%d', id)
-         WHERE spectrum_hash IS NULL OR spectrum_hash = ''",
-    )
-    .execute(conn)
-    .expect("failed to backfill spectra.spectrum_hash for legacy rows");
-
-    sql_query(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_spectra_spectrum_hash_unique
-         ON spectra(spectrum_hash)",
-    )
-    .execute(conn)
-    .expect("failed to create spectra.spectrum_hash unique index");
-}
-
-fn prune_experiments_to_allowed(conn: &mut SqliteConnection, allowed_experiment_ids: &[i32]) {
-    if allowed_experiment_ids.is_empty() {
-        return;
-    }
-
-    let allowed_ids = allowed_experiment_ids
-        .iter()
-        .map(i32::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    sql_query(format!(
-        "DELETE FROM results WHERE experiment_id NOT IN ({allowed_ids})"
-    ))
-    .execute(conn)
-    .expect("failed to delete results for disallowed experiments");
-
-    sql_query(format!(
-        "DELETE FROM experiments WHERE id NOT IN ({allowed_ids})"
-    ))
-    .execute(conn)
-    .expect("failed to delete disallowed experiments");
 }
 
 fn ensure_algorithm(conn: &mut SqliteConnection, name: &str, description: Option<&str>) -> i32 {
@@ -317,13 +211,17 @@ fn set_algorithm_approximation(
         .expect("failed to set algorithm approximation relationship");
 }
 
-fn ensure_rust_library(conn: &mut SqliteConnection) -> i32 {
-    let version = rust_lib_version();
-    let git_commit = rust_lib_git_commit();
-
+fn ensure_library(
+    conn: &mut SqliteConnection,
+    name: &str,
+    version: &str,
+    git_commit: Option<&str>,
+    git_url: Option<&str>,
+    language: &str,
+) -> i32 {
     if let Some(lib) = libraries::table
-        .filter(libraries::name.eq(RUST_LIB_NAME))
-        .filter(libraries::version.eq(&version))
+        .filter(libraries::name.eq(name))
+        .filter(libraries::version.eq(version))
         .first::<Library>(conn)
         .optional()
         .expect("query failed")
@@ -333,67 +231,15 @@ fn ensure_rust_library(conn: &mut SqliteConnection) -> i32 {
 
     diesel::insert_into(libraries::table)
         .values(&NewLibrary {
-            name: RUST_LIB_NAME,
-            version: &version,
-            git_commit: git_commit.as_deref(),
-            git_url: Some(RUST_LIB_GIT_URL),
-            language: "rust",
+            name,
+            version,
+            git_commit,
+            git_url,
+            language,
         })
         .returning(libraries::id)
         .get_result::<i32>(conn)
-        .expect("failed to insert rust library")
-}
-
-fn ensure_matchms_library(conn: &mut SqliteConnection) -> i32 {
-    let version = matchms_version();
-
-    if let Some(lib) = libraries::table
-        .filter(libraries::name.eq(MATCHMS_LIB_NAME))
-        .filter(libraries::version.eq(&version))
-        .first::<Library>(conn)
-        .optional()
-        .expect("query failed")
-    {
-        return lib.id;
-    }
-
-    diesel::insert_into(libraries::table)
-        .values(&NewLibrary {
-            name: MATCHMS_LIB_NAME,
-            version: &version,
-            git_commit: None,
-            git_url: Some("https://github.com/matchms/matchms"),
-            language: "python",
-        })
-        .returning(libraries::id)
-        .get_result::<i32>(conn)
-        .expect("failed to insert matchms library")
-}
-
-fn ensure_ms_entropy_library(conn: &mut SqliteConnection) -> i32 {
-    let version = ms_entropy_version();
-
-    if let Some(lib) = libraries::table
-        .filter(libraries::name.eq(MS_ENTROPY_LIB_NAME))
-        .filter(libraries::version.eq(&version))
-        .first::<Library>(conn)
-        .optional()
-        .expect("query failed")
-    {
-        return lib.id;
-    }
-
-    diesel::insert_into(libraries::table)
-        .values(&NewLibrary {
-            name: MS_ENTROPY_LIB_NAME,
-            version: &version,
-            git_commit: None,
-            git_url: Some("https://github.com/YuanyueLi/MSEntropy"),
-            language: "python",
-        })
-        .returning(libraries::id)
-        .get_result::<i32>(conn)
-        .expect("failed to insert ms_entropy library")
+        .expect("failed to insert library")
 }
 
 fn ensure_implementation(
@@ -510,33 +356,13 @@ pub(crate) fn extract_mass_spec_git_commit(lock_content: &str) -> Option<String>
     None
 }
 
-fn matchms_version() -> String {
+fn python_package_version(package: &str) -> String {
     std::process::Command::new("uv")
         .args([
             "run",
             "python3",
             "-c",
-            "import matchms; print(matchms.__version__)",
-        ])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn ms_entropy_version() -> String {
-    std::process::Command::new("uv")
-        .args([
-            "run",
-            "python3",
-            "-c",
-            "import ms_entropy; print(ms_entropy.__version__)",
+            &format!("import {package}; print({package}.__version__)"),
         ])
         .output()
         .ok()
@@ -875,63 +701,9 @@ source = "git+https://example.com/repo#abc123def"
             .first::<i64>(&mut conn)
             .expect("failed to count experiments");
 
-        assert_eq!(algorithm_count, 6);
-        assert_eq!(implementation_count, 11);
+        assert_eq!(algorithm_count, 8);
+        assert_eq!(implementation_count, 13);
         assert_eq!(experiment_count, PARAM_SETS.len() as i64);
-    }
-
-    #[test]
-    fn initialize_prunes_disallowed_experiments_and_results() {
-        let mut conn = setup_in_memory_connection();
-        initialize(&mut conn);
-
-        let extra_experiment_id = ensure_experiment(
-            &mut conn,
-            &ExperimentParams {
-                tolerance: 0.25,
-                mz_power: 2.0,
-                intensity_power: 0.5,
-                n_warmup: N_WARMUP,
-                n_reps: N_REPS,
-            },
-        );
-        let (left_id, right_id) = seed_two_test_spectra(&mut conn);
-        let implementation_id = first_implementation_id(&mut conn);
-
-        diesel::insert_into(results::table)
-            .values(&NewResult {
-                left_id,
-                right_id,
-                experiment_id: extra_experiment_id,
-                implementation_id,
-                score: 0.5,
-                matches: 0,
-                median_time_us: 1.0,
-            })
-            .execute(&mut conn)
-            .expect("failed to insert result row for extra experiment");
-
-        initialize(&mut conn);
-
-        let experiment_count = experiments::table
-            .select(count_star())
-            .first::<i64>(&mut conn)
-            .expect("failed to count experiments after prune");
-        assert_eq!(experiment_count, PARAM_SETS.len() as i64);
-
-        let extra_experiment_count = experiments::table
-            .filter(experiments::id.eq(extra_experiment_id))
-            .select(count_star())
-            .first::<i64>(&mut conn)
-            .expect("failed to count extra experiment rows");
-        assert_eq!(extra_experiment_count, 0);
-
-        let stale_result_count = results::table
-            .filter(results::experiment_id.eq(extra_experiment_id))
-            .select(count_star())
-            .first::<i64>(&mut conn)
-            .expect("failed to count stale result rows");
-        assert_eq!(stale_result_count, 0);
     }
 
     #[test]
@@ -1017,7 +789,7 @@ source = "git+https://example.com/repo#abc123def"
             }
         }
 
-        assert_eq!(refs_by_algorithm.len(), 6);
+        assert_eq!(refs_by_algorithm.len(), 8);
         assert!(
             refs_by_algorithm.values().all(|&n| n <= 1),
             "expected at most one reference implementation per algorithm, got {refs_by_algorithm:?}"
@@ -1142,93 +914,5 @@ source = "git+https://example.com/repo#abc123def"
             .first::<bool>(&mut conn)
             .expect("failed to load ModifiedGreedyCosine matchms reference flag");
         assert!(!matchms_modified_greedy_ref);
-    }
-
-    #[test]
-    fn upgrades_legacy_implementations_table_with_reference_column() {
-        let mut conn = setup_in_memory_connection();
-        sql_query(
-            "CREATE TABLE implementations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                algorithm_id INTEGER NOT NULL,
-                library_id INTEGER NOT NULL,
-                UNIQUE(algorithm_id, library_id)
-            ) STRICT",
-        )
-        .execute(&mut conn)
-        .expect("failed to create legacy implementations table");
-
-        assert!(!implementations_has_column(&mut conn, "is_reference"));
-        ensure_implementations_reference_schema(&mut conn);
-        assert!(implementations_has_column(&mut conn, "is_reference"));
-    }
-
-    #[test]
-    fn upgrades_legacy_algorithms_table_with_approximation_column() {
-        let mut conn = setup_in_memory_connection();
-        sql_query(
-            "CREATE TABLE algorithms (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                description TEXT
-            ) STRICT",
-        )
-        .execute(&mut conn)
-        .expect("failed to create legacy algorithms table");
-
-        assert!(!algorithms_has_column(
-            &mut conn,
-            "approximates_algorithm_id"
-        ));
-        ensure_algorithms_approximation_schema(&mut conn);
-        assert!(algorithms_has_column(
-            &mut conn,
-            "approximates_algorithm_id"
-        ));
-    }
-
-    #[test]
-    fn upgrades_legacy_spectra_table_with_spectrum_hash_column() {
-        let mut conn = setup_in_memory_connection();
-        sql_query(
-            "CREATE TABLE spectra (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                raw_name TEXT NOT NULL,
-                source_file TEXT NOT NULL,
-                precursor_mz REAL NOT NULL,
-                num_peaks INTEGER NOT NULL,
-                peaks TEXT NOT NULL
-            ) STRICT",
-        )
-        .execute(&mut conn)
-        .expect("failed to create legacy spectra table");
-
-        sql_query(
-            "INSERT INTO spectra (name, raw_name, source_file, precursor_mz, num_peaks, peaks)
-             VALUES
-             ('a', 'a', 'legacy.mgf', 100.0, 5, '[]'),
-             ('b', 'b', 'legacy.mgf', 200.0, 6, '[]')",
-        )
-        .execute(&mut conn)
-        .expect("failed to seed legacy spectra rows");
-
-        assert!(!table_has_column(&mut conn, "spectra", "spectrum_hash"));
-        ensure_spectra_hash_schema(&mut conn);
-        assert!(table_has_column(&mut conn, "spectra", "spectrum_hash"));
-
-        let hashes: Vec<String> = sql_query(
-            "SELECT spectrum_hash AS name
-             FROM spectra
-             ORDER BY id",
-        )
-        .load::<TableInfoRow>(&mut conn)
-        .expect("failed to load backfilled spectrum hashes")
-        .into_iter()
-        .map(|row| row.name)
-        .collect();
-        assert_eq!(hashes.len(), 2);
-        assert_eq!(hashes[0], "__legacy_spectrum_1");
-        assert_eq!(hashes[1], "__legacy_spectrum_2");
     }
 }

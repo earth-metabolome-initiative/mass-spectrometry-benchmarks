@@ -77,6 +77,27 @@ mod tests {
             })
             .expect("missing ModifiedGreedyCosine implementation row");
         assert_eq!(modified_greedy.canonical_algorithm_name, "ModifiedCosine");
+
+        let linear_cosine = rows
+            .iter()
+            .find(|row| {
+                row.algorithm_name == "LinearCosine"
+                    && row.library_name == "mass-spectrometry-traits"
+            })
+            .expect("missing LinearCosine implementation row");
+        assert_eq!(linear_cosine.canonical_algorithm_name, "CosineHungarian");
+
+        let modified_linear_cosine = rows
+            .iter()
+            .find(|row| {
+                row.algorithm_name == "ModifiedLinearCosine"
+                    && row.library_name == "mass-spectrometry-traits"
+            })
+            .expect("missing ModifiedLinearCosine implementation row");
+        assert_eq!(
+            modified_linear_cosine.canonical_algorithm_name,
+            "ModifiedCosine"
+        );
     }
 
     #[test]

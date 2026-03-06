@@ -7,35 +7,27 @@ import ms_entropy  # type: ignore
 from python_ref.types import SpectrumData
 
 
-def _to_peaks(data: SpectrumData) -> np.ndarray:
-    """Build an (n, 2) float32 C-contiguous peak array with intensities
-    normalized to sum to 1.
+def _clean_peaks(data: SpectrumData) -> np.ndarray:
+    """Build a cleaned (n, 2) float32 peak array via ``ms_entropy.clean_spectrum``.
 
-    ms_entropy 1.4.0 Cython uses ``np.array(x, copy=False)`` when
-    ``clean_spectra=False``, which raises on NumPy >= 2.0 if a dtype
-    conversion (float64 -> float32) would be needed.  Pre-converting to
-    float32 avoids this.
+    This mirrors the Rust ``MsEntropyCleanSpectrum`` preprocessing: centroiding,
+    noise filtering, and intensity normalization are all performed by the library's
+    own ``clean_spectrum()`` with default parameters (``min_ms2_difference_in_da=0.05``,
+    ``noise_threshold=0.01``, ``normalize_intensity=True``).
 
-    Normalizing to sum-to-one is required because the Cython/C
-    ``calculate_unweighted_entropy_similarity`` does NOT normalize
-    internally when ``clean_spectra=False`` — it feeds raw intensities
-    straight into the JSD formula.  The
-    ``calculate_entropy_similarity`` (weighted) path normalizes inside
-    its ``apply_weight_to_intensity`` C helper so pre-normalizing is
-    harmless there (the power-then-renormalize step is scale-invariant).
+    The similarity functions are then called with ``clean_spectra=False`` because
+    the spectra are already clean.
     """
     peaks = np.column_stack((data.mz, data.intensities)).astype(np.float32)
-    intensity_sum = peaks[:, 1].sum()
-    if intensity_sum > 0:
-        peaks[:, 1] /= intensity_sum
-    return np.ascontiguousarray(peaks)
+    peaks = np.ascontiguousarray(peaks)
+    return ms_entropy.clean_spectrum(peaks)
 
 
 def entropy_similarity_ms_entropy(
     left: SpectrumData, right: SpectrumData, tolerance: float, weighted: bool
 ) -> float | None:
-    peaks_a = _to_peaks(left)
-    peaks_b = _to_peaks(right)
+    peaks_a = _clean_peaks(left)
+    peaks_b = _clean_peaks(right)
 
     def try_call(func, **kwargs):
         try:
