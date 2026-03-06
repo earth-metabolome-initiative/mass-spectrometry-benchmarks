@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use indicatif::{ProgressBar, ProgressStyle};
 use mass_spectrometry::prelude::*;
 
 use crate::db;
@@ -12,7 +13,6 @@ use crate::models::*;
 use crate::pair_selection;
 
 const FLUSH_BATCH: usize = 500;
-const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const GLOBAL_WARMUP_PAIR_SAMPLE: usize = 100;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
 
@@ -295,7 +295,12 @@ where
         return 0;
     }
 
-    eprintln!("[compute] {algorithm_label}: 0/{work_len}");
+    let pb = ProgressBar::new(work_len as u64);
+    pb.set_style(
+        ProgressStyle::with_template("[compute] {msg}: {bar:40} {pos}/{len} ({eta})")
+            .expect("invalid progress bar template"),
+    );
+    pb.set_message(algorithm_label.clone());
 
     let mut batch: Vec<NewResult> = Vec::with_capacity(work_len);
     let mut total_done: usize = 0;
@@ -367,15 +372,12 @@ where
             });
 
             total_done += 1;
-
-            if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL) {
-                eprintln!("[compute] {algorithm_label}: {total_done}/{work_len}");
-            }
+            pb.set_position(total_done as u64);
         }
     }
 
     flush_results(conn, &mut batch);
-    eprintln!("[compute] {algorithm_label}: {total_done} pairs computed");
+    pb.finish_with_message(format!("{algorithm_label}: {total_done} pairs computed"));
     total_done
 }
 

@@ -2,99 +2,99 @@
 
 ## Run Scope
 
-- Requested max spectra: `20`
-- Total spectra in DB: `20`
-- Spectra used in results: `20`
+- Requested max spectra: `100000`
+- Total spectra in DB: `100000`
+- Spectra used in results: `86641`
 
-## Timing by Peak Count (Spectra used: 20)
+## Timing by Peak Count (Spectra used: 86641)
 
 Y-axis: `Mean time (µs)`
 
 ### Reference: CosineHungarian (matchms)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| CosineGreedy (mass-spectrometry-traits) | 1.772e0 ± 2.57e-1 (n=22) | 2.415e0 ± 4.70e-1 (n=64) | 3.610e0 ± 8.58e-1 (n=14) |
-| CosineGreedy (matchms) | 2.056e1 ± 4.85e0 (n=22) | 2.605e1 ± 9.19e0 (n=64) | 3.412e1 ± 9.32e0 (n=14) |
-| CosineHungarian (mass-spectrometry-traits) | 1.826e0 ± 3.01e-1 (n=22) | 3.355e0 ± 2.63e0 (n=64) | 8.609e0 ± 1.07e1 (n=14) |
-| CosineHungarian (matchms) | 2.888e1 ± 1.84e1 (n=22) | 4.925e1 ± 3.81e1 (n=64) | 9.561e1 ± 7.34e1 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CosineGreedy (mass-spectrometry-traits) | 2.425e0 ± 2.72e0 (n=3192) | 2.641e0 ± 2.61e0 (n=13383) | 3.136e0 ± 2.73e0 (n=25455) | 4.183e0 ± 2.97e0 (n=27099) | 6.197e0 ± 3.35e0 (n=23086) | 9.997e0 ± 3.80e0 (n=6555) | 1.726e1 ± 4.25e0 (n=1105) | 2.871e1 ± 4.12e0 (n=125) |
+| CosineGreedy (matchms) | 1.853e1 ± 4.28e0 (n=3192) | 1.908e1 ± 4.91e0 (n=13383) | 2.033e1 ± 6.23e0 (n=25455) | 2.280e1 ± 7.98e0 (n=27099) | 2.716e1 ± 1.07e1 (n=23086) | 3.486e1 ± 1.22e1 (n=6555) | 4.832e1 ± 1.35e1 (n=1105) | 7.463e1 ± 2.09e1 (n=125) |
+| CosineHungarian (mass-spectrometry-traits) | 2.447e0 ± 2.77e0 (n=3192) | 2.671e0 ± 2.67e0 (n=13383) | 3.185e0 ± 2.78e0 (n=25455) | 4.323e0 ± 3.13e0 (n=27099) | 6.925e0 ± 5.54e0 (n=23086) | 1.128e1 ± 8.15e0 (n=6555) | 2.150e1 ± 2.97e1 (n=1105) | 4.969e1 ± 4.55e1 (n=125) |
+| CosineHungarian (matchms) | 2.184e1 ± 1.14e1 (n=3192) | 2.367e1 ± 1.37e1 (n=13383) | 2.749e1 ± 1.76e1 (n=25455) | 3.510e1 ± 2.38e1 (n=27099) | 4.896e1 ± 4.75e1 (n=23086) | 6.633e1 ± 5.92e1 (n=6555) | 1.014e2 ± 1.36e2 (n=1105) | 2.241e2 ± 2.43e2 (n=125) |
 
 ### Reference: CosineHungarianMerged (mass-spectrometry-traits)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| CosineHungarianMerged (mass-spectrometry-traits) | 1.729e0 ± 2.79e-1 (n=22) | 3.246e0 ± 2.79e0 (n=64) | 7.819e0 ± 9.69e0 (n=14) |
-| LinearCosine (mass-spectrometry-traits) | 1.767e0 ± 2.74e-1 (n=22) | 2.159e0 ± 3.70e-1 (n=64) | 2.952e0 ± 2.28e-1 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CosineHungarianMerged (mass-spectrometry-traits) | 2.363e0 ± 2.77e0 (n=3192) | 2.575e0 ± 2.66e0 (n=13383) | 3.094e0 ± 2.84e0 (n=25455) | 4.153e0 ± 3.17e0 (n=27099) | 6.185e0 ± 3.98e0 (n=23086) | 1.050e1 ± 6.23e0 (n=6555) | 2.131e1 ± 3.09e1 (n=1105) | 4.755e1 ± 4.43e1 (n=125) |
+| LinearCosine (mass-spectrometry-traits) | 2.480e0 ± 2.79e0 (n=3192) | 2.694e0 ± 2.67e0 (n=13383) | 3.162e0 ± 2.80e0 (n=25455) | 4.096e0 ± 3.01e0 (n=27099) | 5.784e0 ± 3.40e0 (n=23086) | 9.311e0 ± 3.88e0 (n=6555) | 1.598e1 ± 4.10e0 (n=1105) | 2.545e1 ± 4.27e0 (n=125) |
 
 ### Reference: EntropySimilarityUnweighted (ms_entropy)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| EntropySimilarityUnweighted (mass-spectrometry-traits) | 5.670e-1 ± 2.50e-1 (n=22) | 5.035e-1 ± 2.52e-1 (n=64) | 7.714e-1 ± 1.98e-1 (n=14) |
-| EntropySimilarityUnweighted (ms_entropy) | 1.176e1 ± 8.47e-1 (n=22) | 1.356e1 ± 1.25e0 (n=64) | 1.634e1 ± 7.13e-1 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| EntropySimilarityUnweighted (mass-spectrometry-traits) | 5.656e-1 ± 6.72e-1 (n=3192) | 6.123e-1 ± 7.40e-1 (n=13383) | 7.122e-1 ± 7.97e-1 (n=25455) | 8.759e-1 ± 9.04e-1 (n=27099) | 1.098e0 ± 1.12e0 (n=23086) | 1.513e0 ± 1.51e0 (n=6555) | 2.421e0 ± 2.29e0 (n=1105) | 3.782e0 ± 3.31e0 (n=125) |
+| EntropySimilarityUnweighted (ms_entropy) | 1.461e1 ± 1.29e1 (n=3192) | 1.481e1 ± 1.22e1 (n=13383) | 1.619e1 ± 1.32e1 (n=25455) | 1.927e1 ± 1.45e1 (n=27099) | 2.547e1 ± 1.75e1 (n=23086) | 3.849e1 ± 2.26e1 (n=6555) | 6.719e1 ± 3.42e1 (n=1105) | 1.321e2 ± 3.56e1 (n=125) |
 
 ### Reference: EntropySimilarityWeighted (ms_entropy)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| EntropySimilarityWeighted (mass-spectrometry-traits) | 1.054e0 ± 4.98e-1 (n=22) | 9.115e-1 ± 4.50e-1 (n=64) | 1.392e0 ± 2.84e-1 (n=14) |
-| EntropySimilarityWeighted (ms_entropy) | 1.235e1 ± 1.02e0 (n=22) | 1.387e1 ± 1.40e0 (n=64) | 1.654e1 ± 8.95e-1 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| EntropySimilarityWeighted (mass-spectrometry-traits) | 9.445e-1 ± 9.09e-1 (n=3192) | 1.026e0 ± 1.00e0 (n=13383) | 1.193e0 ± 1.08e0 (n=25455) | 1.439e0 ± 1.22e0 (n=27099) | 1.728e0 ± 1.48e0 (n=23086) | 2.281e0 ± 1.97e0 (n=6555) | 3.506e0 ± 2.97e0 (n=1105) | 5.254e0 ± 4.29e0 (n=125) |
+| EntropySimilarityWeighted (ms_entropy) | 1.533e1 ± 1.29e1 (n=3192) | 1.552e1 ± 1.22e1 (n=13383) | 1.692e1 ± 1.32e1 (n=25455) | 2.005e1 ± 1.46e1 (n=27099) | 2.628e1 ± 1.76e1 (n=23086) | 3.958e1 ± 2.26e1 (n=6555) | 6.857e1 ± 3.42e1 (n=1105) | 1.342e2 ± 3.57e1 (n=125) |
 
 ### Reference: ModifiedCosine (mass-spectrometry-traits)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| ModifiedCosine (mass-spectrometry-traits) | 2.087e0 ± 2.83e-1 (n=22) | 4.059e0 ± 3.30e0 (n=64) | 1.089e1 ± 1.25e1 (n=14) |
-| ModifiedGreedyCosine (mass-spectrometry-traits) | 2.085e0 ± 2.94e-1 (n=22) | 2.869e0 ± 5.17e-1 (n=64) | 4.216e0 ± 7.63e-1 (n=14) |
-| ModifiedGreedyCosine (matchms) | 3.094e1 ± 6.47e0 (n=22) | 4.018e1 ± 7.87e0 (n=64) | 4.605e1 ± 1.31e1 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ModifiedCosine (mass-spectrometry-traits) | 2.856e0 ± 3.15e0 (n=3192) | 3.146e0 ± 3.09e0 (n=13383) | 3.759e0 ± 3.29e0 (n=25455) | 5.135e0 ± 3.72e0 (n=27099) | 8.240e0 ± 6.29e0 (n=23086) | 1.369e1 ± 9.83e0 (n=6555) | 2.721e1 ± 3.22e1 (n=1105) | 7.595e1 ± 8.29e1 (n=125) |
+| ModifiedGreedyCosine (mass-spectrometry-traits) | 2.741e0 ± 3.05e0 (n=3192) | 3.004e0 ± 2.96e0 (n=13383) | 3.576e0 ± 3.13e0 (n=25455) | 4.799e0 ± 3.39e0 (n=27099) | 7.167e0 ± 3.83e0 (n=23086) | 1.165e1 ± 4.41e0 (n=6555) | 2.021e1 ± 5.03e0 (n=1105) | 3.386e1 ± 4.90e0 (n=125) |
+| ModifiedGreedyCosine (matchms) | 2.825e1 ± 7.02e0 (n=3192) | 2.946e1 ± 7.33e0 (n=13383) | 3.125e1 ± 8.03e0 (n=25455) | 3.421e1 ± 9.03e0 (n=27099) | 3.922e1 ± 1.08e1 (n=23086) | 4.760e1 ± 1.13e1 (n=6555) | 6.226e1 ± 1.50e1 (n=1105) | 9.290e1 ± 2.75e1 (n=125) |
 
 ### Reference: ModifiedCosineMerged (mass-spectrometry-traits)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| ModifiedCosineMerged (mass-spectrometry-traits) | 1.966e0 ± 2.63e-1 (n=22) | 3.685e0 ± 2.83e0 (n=64) | 9.380e0 ± 1.08e1 (n=14) |
-| ModifiedLinearCosine (mass-spectrometry-traits) | 1.934e0 ± 2.81e-1 (n=22) | 2.532e0 ± 3.98e-1 (n=64) | 3.597e0 ± 5.74e-1 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ModifiedCosineMerged (mass-spectrometry-traits) | 2.626e0 ± 3.01e0 (n=3192) | 2.874e0 ± 2.89e0 (n=13383) | 3.445e0 ± 3.10e0 (n=25455) | 4.656e0 ± 3.50e0 (n=27099) | 7.010e0 ± 4.53e0 (n=23086) | 1.213e1 ± 8.06e0 (n=6555) | 2.618e1 ± 3.44e1 (n=1105) | 6.836e1 ± 6.94e1 (n=125) |
+| ModifiedLinearCosine (mass-spectrometry-traits) | 2.738e0 ± 3.02e0 (n=3192) | 2.987e0 ± 2.92e0 (n=13383) | 3.508e0 ± 3.07e0 (n=25455) | 4.550e0 ± 3.34e0 (n=27099) | 6.441e0 ± 3.77e0 (n=23086) | 1.040e1 ± 4.42e0 (n=6555) | 1.807e1 ± 4.90e0 (n=1105) | 2.921e1 ± 5.31e0 (n=125) |
 
-## RMSE vs Reference by Peak Count (Spectra used: 20)
+## RMSE vs Reference by Peak Count (Spectra used: 86641)
 
 Y-axis: `RMSE`
 
 ### Reference: CosineHungarian (matchms)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| CosineGreedy (mass-spectrometry-traits) | 1.000e-16 ± 4.01e-25 (n=22) | 1.194e-16 ± 4.81e-17 (n=64) | 1.139e-16 ± 2.66e-17 (n=14) |
-| CosineGreedy (matchms) | 1.000e-16 ± 4.01e-25 (n=22) | 1.107e-16 ± 3.02e-17 (n=64) | 1.008e-16 ± 1.93e-18 (n=14) |
-| CosineHungarian (mass-spectrometry-traits) | 1.005e-16 ± 1.48e-18 (n=22) | 1.036e-16 ± 1.25e-17 (n=64) | 1.000e-16 ± 6.24e-25 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| CosineGreedy (mass-spectrometry-traits) | 1.000e-16 ± 7.36e-24 (n=3192) | 1.003e-16 ± 5.97e-18 (n=13383) | 5.357e-7 ± 3.28e-6 (n=25455) | 1.421e-6 ± 4.21e-6 (n=27099) | 2.508e-5 ± 1.54e-4 (n=23086) | 2.341e-6 ± 5.66e-6 (n=6555) | 1.000e-16 (n=1105) | 1.000e-16 ± 9.90e-25 (n=125) |
+| CosineGreedy (matchms) | 1.000e-16 ± 7.36e-24 (n=3192) | 1.002e-16 ± 4.07e-18 (n=13383) | 1.416e-7 ± 7.74e-7 (n=25455) | 1.421e-6 ± 4.21e-6 (n=27099) | 2.508e-5 ± 1.54e-4 (n=23086) | 2.341e-6 ± 5.66e-6 (n=6555) | 1.005e-16 ± 7.30e-18 (n=1105) | 1.000e-16 ± 9.90e-25 (n=125) |
+| CosineHungarian (mass-spectrometry-traits) | 1.000e-16 ± 7.36e-24 (n=3192) | 1.003e-16 ± 5.97e-18 (n=13383) | 1.007e-16 ± 1.13e-17 (n=25455) | 1.021e-16 ± 1.69e-17 (n=27099) | 1.087e-16 ± 4.99e-17 (n=23086) | 1.068e-16 ± 5.32e-17 (n=6555) | 1.000e-16 (n=1105) | 1.001e-16 ± 5.63e-19 (n=125) |
 
 ### Reference: CosineHungarianMerged (mass-spectrometry-traits)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| LinearCosine (mass-spectrometry-traits) | 1.000e-16 ± 4.01e-25 (n=22) | 1.000e-16 (n=64) | 1.000e-16 ± 6.24e-25 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| LinearCosine (mass-spectrometry-traits) | 1.000e-16 ± 7.36e-24 (n=3192) | 1.000e-16 (n=13383) | 1.000e-16 ± 1.58e-23 (n=25455) | 1.000e-16 ± 1.65e-23 (n=27099) | 1.000e-16 ± 8.46e-24 (n=23086) | 1.000e-16 ± 9.37e-24 (n=6555) | 1.000e-16 (n=1105) | 1.000e-16 ± 9.90e-25 (n=125) |
 
 ### Reference: EntropySimilarityUnweighted (ms_entropy)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| EntropySimilarityUnweighted (mass-spectrometry-traits) | 4.927e-9 ± 5.06e-9 (n=22) | 2.013e-8 ± 2.44e-8 (n=64) | 2.939e-8 ± 2.51e-8 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| EntropySimilarityUnweighted (mass-spectrometry-traits) | 1.606e-6 ± 6.07e-6 (n=3192) | 1.906e-3 ± 6.20e-3 (n=13383) | 2.412e-3 ± 7.36e-3 (n=25455) | 2.930e-3 ± 7.71e-3 (n=27099) | 6.187e-3 ± 1.09e-2 (n=23086) | 4.665e-3 ± 1.01e-2 (n=6555) | 2.473e-4 ± 5.87e-4 (n=1105) | 8.385e-4 ± 1.18e-3 (n=125) |
 
 ### Reference: EntropySimilarityWeighted (ms_entropy)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| EntropySimilarityWeighted (mass-spectrometry-traits) | 1.445e-8 ± 1.50e-8 (n=22) | 1.385e-8 ± 1.48e-8 (n=64) | 1.757e-8 ± 1.65e-8 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| EntropySimilarityWeighted (mass-spectrometry-traits) | 4.901e-7 ± 1.67e-6 (n=3192) | 5.081e-3 ± 1.60e-2 (n=13383) | 5.613e-3 ± 1.66e-2 (n=25455) | 9.402e-3 ± 2.26e-2 (n=27099) | 2.251e-2 ± 3.88e-2 (n=23086) | 1.359e-2 ± 3.00e-2 (n=6555) | 3.050e-4 ± 7.53e-4 (n=1105) | 8.385e-4 ± 1.18e-3 (n=125) |
 
 ### Reference: ModifiedCosine (mass-spectrometry-traits)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| ModifiedGreedyCosine (mass-spectrometry-traits) | 1.005e-16 ± 1.48e-18 (n=22) | 1.167e-16 ± 4.67e-17 (n=64) | 1.132e-16 ± 2.63e-17 (n=14) |
-| ModifiedGreedyCosine (matchms) | 1.227e-16 ± 3.83e-17 (n=22) | 1.138e-16 ± 3.24e-17 (n=64) | 1.000e-16 ± 6.24e-25 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ModifiedGreedyCosine (mass-spectrometry-traits) | 1.000e-16 ± 1.05e-19 (n=3192) | 1.000e-16 ± 8.55e-19 (n=13383) | 4.655e-6 ± 2.93e-5 (n=25455) | 1.123e-4 ± 7.21e-4 (n=27099) | 1.080e-4 ± 5.34e-4 (n=23086) | 7.748e-5 ± 3.22e-4 (n=6555) | 8.064e-6 ± 2.10e-5 (n=1105) | 1.938e-4 ± 3.38e-4 (n=125) |
+| ModifiedGreedyCosine (matchms) | 1.032e-16 ± 1.39e-17 (n=3192) | 1.046e-16 ± 2.10e-17 (n=13383) | 4.852e-6 ± 2.94e-5 (n=25455) | 1.034e-4 ± 5.64e-4 (n=27099) | 1.147e-4 ± 5.39e-4 (n=23086) | 7.747e-5 ± 3.22e-4 (n=6555) | 7.995e-6 ± 2.10e-5 (n=1105) | 1.938e-4 ± 3.38e-4 (n=125) |
 
 ### Reference: ModifiedCosineMerged (mass-spectrometry-traits)
 
-| Series | 17–32 | 33–64 | 65–128 |
-| --- | --- | --- | --- |
-| ModifiedLinearCosine (mass-spectrometry-traits) | 1.011e-16 ± 2.19e-18 (n=22) | 1.435e-16 ± 1.04e-16 (n=64) | 2.296e-5 ± 2.50e-5 (n=14) |
+| Series | 5–8 | 9–16 | 17–32 | 33–64 | 65–128 | 129–256 | 257–512 | 513–1023 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ModifiedLinearCosine (mass-spectrometry-traits) | 1.000e-16 ± 1.05e-19 (n=3192) | 1.000e-16 ± 1.20e-18 (n=13383) | 1.001e-16 ± 1.76e-18 (n=25455) | 7.927e-6 ± 4.35e-5 (n=27099) | 1.050e-4 ± 5.32e-4 (n=23086) | 5.902e-5 ± 2.62e-4 (n=6555) | 8.088e-6 ± 2.10e-5 (n=1105) | 1.922e-4 ± 3.35e-4 (n=125) |
 
