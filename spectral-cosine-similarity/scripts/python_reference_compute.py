@@ -1,106 +1,27 @@
 """Compute missing Python reference similarities and timings in a single pass.
 
-Reads experiments, spectra, and implementations from the SQLite DB, generates
-spectrum pairs at runtime, computes Python-reference results for any missing
-pairs, and writes back to the results table.
+Reads experiments, spectra, and selected pairs from the SQLite DB, computes
+Python-reference results for any missing pairs, and writes back to the results table.
 
 Usage:
-  python_reference_compute.py <db_path> [max_spectra]
-  python_reference_compute.py <db_path> --max-spectra <max_spectra>
-  python_reference_compute.py <db_path> --algorithm <algorithm_name>
+  python_reference_compute.py <db_path> [--algorithm <name>]
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 import sqlite3
 
 from python_ref import db_io
 from python_ref import runner
-from python_ref import workload
-from python_ref.algorithms import cosine_greedy
-from python_ref.algorithms import cosine_hungarian
-from python_ref.algorithms import entropy_unweighted
-from python_ref.algorithms import entropy_weighted
-from python_ref.algorithms import modified_greedy_cosine
-
-def parse_cli_args(argv: list[str]) -> tuple[str, int | None, int | None, str | None]:
-    db_path = argv[1] if len(argv) > 1 else "fixtures/benchmark.db"
-    max_spectra: int | None = None
-    num_pairs: int | None = None
-    selected_algorithm: str | None = None
-    extra_positional: list[str] = []
-
-    i = 2
-    while i < len(argv):
-        token = argv[i]
-        if token == "--max-spectra":
-            if i + 1 >= len(argv):
-                raise SystemExit("missing value for --max-spectra")
-            max_spectra = int(argv[i + 1])
-            i += 2
-            continue
-        if token.startswith("--max-spectra="):
-            max_spectra = int(token.split("=", 1)[1])
-            i += 1
-            continue
-        if token == "--num-pairs":
-            if i + 1 >= len(argv):
-                raise SystemExit("missing value for --num-pairs")
-            num_pairs = int(argv[i + 1])
-            i += 2
-            continue
-        if token.startswith("--num-pairs="):
-            num_pairs = int(token.split("=", 1)[1])
-            i += 1
-            continue
-        if token == "--algorithm":
-            if i + 1 >= len(argv):
-                raise SystemExit("missing value for --algorithm")
-            selected_algorithm = argv[i + 1]
-            i += 2
-            continue
-        if token.startswith("--algorithm="):
-            selected_algorithm = token.split("=", 1)[1]
-            i += 1
-            continue
-        extra_positional.append(token)
-        i += 1
-
-    if max_spectra is None:
-        if len(extra_positional) == 1:
-            max_spectra = int(extra_positional[0])
-        elif len(extra_positional) == 2:
-            _legacy_batch = int(extra_positional[0])
-            max_spectra = int(extra_positional[1])
-            print(
-                "[python_reference_compute] legacy batch_size argument is ignored",
-                file=sys.stderr,
-            )
-        elif len(extra_positional) > 2:
-            raise SystemExit("too many positional arguments")
-    else:
-        if len(extra_positional) == 1:
-            _legacy_batch = int(extra_positional[0])
-            print(
-                "[python_reference_compute] legacy batch_size argument is ignored",
-                file=sys.stderr,
-            )
-        elif len(extra_positional) > 1:
-            raise SystemExit("too many positional arguments")
-
-    return db_path, max_spectra, num_pairs, selected_algorithm
+from python_ref.algorithms import ALGORITHMS
 
 
-DB_PATH, MAX_SPECTRA, NUM_PAIRS, SELECTED_ALGORITHM = parse_cli_args(sys.argv)
-
-ALGORITHMS = [
-    ("CosineHungarian", "matchms", cosine_hungarian.compute_once),
-    ("CosineGreedy", "matchms", cosine_greedy.compute_once),
-    ("ModifiedGreedyCosine", "matchms", modified_greedy_cosine.compute_once),
-    ("EntropySimilarityWeighted", "ms_entropy", entropy_weighted.compute_once),
-    ("EntropySimilarityUnweighted", "ms_entropy", entropy_unweighted.compute_once),
-]
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Python reference compute")
+    parser.add_argument("db_path", nargs="?", default="fixtures/benchmark.db")
+    parser.add_argument("--algorithm", default=None, help="Run only this algorithm")
+    return parser.parse_args()
 
 
 def selected_algorithms(algorithm_name: str | None):
@@ -118,7 +39,8 @@ def selected_algorithms(algorithm_name: str | None):
 
 
 def main() -> None:
-    conn = sqlite3.connect(DB_PATH)
+    args = parse_args()
+    conn = sqlite3.connect(args.db_path)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -127,15 +49,11 @@ def main() -> None:
     try:
         cur = conn.cursor()
         experiments = db_io.load_experiments(cur)
-        spectra = db_io.load_spectra(cur, max_spectra=MAX_SPECTRA)
-        spectrum_ids = list(spectra.keys())
-        if NUM_PAIRS is not None:
-            id_pairs = list(workload.sample_pairs(spectrum_ids, NUM_PAIRS))
-        else:
-            id_pairs = workload.generate_pairs(spectrum_ids)
+        id_pairs = db_io.load_selected_pairs(cur)
+        spectra = db_io.load_spectra(cur)
 
         for algo_name, library_name, compute_once in selected_algorithms(
-            SELECTED_ALGORITHM
+            args.algorithm
         ):
             impl_id = db_io.get_implementation_id(cur, algo_name, library_name)
             runner.run_algorithm(

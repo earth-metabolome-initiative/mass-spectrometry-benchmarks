@@ -20,11 +20,4 @@ class SpectrumData:
     intensities: np.ndarray
 
 
-@dataclass(frozen=True)
-class WorkItem:
-    left_id: int
-    right_id: int
-    experiment: ExperimentData
-
-
 ComputeFn = Callable[[SpectrumData, SpectrumData, dict[str, Any]], tuple[float, int]]

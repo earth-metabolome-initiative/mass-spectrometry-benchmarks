@@ -6,7 +6,6 @@ use std::path::Path;
 use crate::mgf_parser::{parse_mgf, sanitize_name};
 use crate::models::*;
 use crate::peaks::Peaks;
-use crate::progress::StageProgress;
 use crate::schema::*;
 
 const MIN_PEAKS: usize = 5;
@@ -62,48 +61,21 @@ fn mgf_sources() -> Vec<(&'static str, &'static str)> {
     sources
 }
 
-fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
-    if let Some(p) = progress.as_deref_mut() {
-        p.set_message(message);
-    } else {
-        eprintln!("{message}");
-    }
-}
-
 /// Parse MGF files and insert spectra into the database.
-pub fn run(conn: &mut SqliteConnection, max_spectra: Option<usize>) {
-    run_with_progress(conn, max_spectra, None);
-}
-
-/// Parse MGF files and insert spectra into the database with optional progress updates.
-pub fn run_with_progress(
-    conn: &mut SqliteConnection,
-    max_spectra: Option<usize>,
-    progress: Option<&mut dyn StageProgress>,
-) {
+pub fn run(conn: &mut SqliteConnection, max_spectra: usize) {
     let raw_sources = mgf_sources();
     let sources: Vec<(&Path, &str)> = raw_sources
         .iter()
         .map(|(path, source_label)| (Path::new(*path), *source_label))
         .collect();
-    run_with_sources_with_progress(conn, max_spectra, &sources, progress);
+    run_with_sources(conn, max_spectra, &sources);
 }
 
 /// Parse explicit MGF sources and insert spectra into the database.
 pub fn run_with_sources(
     conn: &mut SqliteConnection,
-    max_spectra: Option<usize>,
+    max_spectra: usize,
     sources: &[(&Path, &str)],
-) {
-    run_with_sources_with_progress(conn, max_spectra, sources, None);
-}
-
-/// Parse explicit MGF sources and insert spectra into the database with optional progress updates.
-pub fn run_with_sources_with_progress(
-    conn: &mut SqliteConnection,
-    max_spectra: Option<usize>,
-    sources: &[(&Path, &str)],
-    mut progress: Option<&mut dyn StageProgress>,
 ) {
     // Collect hashes already in the DB to avoid duplicates.
     let existing_hashes: std::collections::HashSet<String> = spectra::table
@@ -115,25 +87,18 @@ pub fn run_with_sources_with_progress(
         .collect();
 
     let total_existing = existing_hashes.len();
-    let mut remaining_budget = max_spectra.map(|max| max.saturating_sub(total_existing));
+    let mut remaining_budget = max_spectra.saturating_sub(total_existing);
 
-    if let Some(0) = remaining_budget {
-        let max = max_spectra.expect("remaining_budget is Some only when max_spectra is set");
-        emit(
-            &mut progress,
-            &format!(
-                "[prepare] {total_existing} spectra already in DB (max {max}), nothing to load"
-            ),
+    if remaining_budget == 0 {
+        eprintln!(
+            "[prepare] {total_existing} spectra already in DB (max {max_spectra}), nothing to load"
         );
         return;
     }
 
-    emit(
-        &mut progress,
-        &format!(
-            "[prepare] {total_existing} spectra already in DB, scanning {} source(s) for missing spectra...",
-            sources.len()
-        ),
+    eprintln!(
+        "[prepare] {total_existing} spectra already in DB, scanning {} source(s) for missing spectra...",
+        sources.len()
     );
 
     let mut seen_hashes = existing_hashes;
@@ -142,17 +107,11 @@ pub fn run_with_sources_with_progress(
 
     for (mgf_path, source_label) in sources {
         if !mgf_path.exists() {
-            emit(
-                &mut progress,
-                &format!("[prepare] Skipping {} (not found)", mgf_path.display()),
-            );
+            eprintln!("[prepare] Skipping {} (not found)", mgf_path.display());
             continue;
         }
         processed_sources += 1;
-        emit(
-            &mut progress,
-            &format!("[prepare] Parsing {}", mgf_path.display()),
-        );
+        eprintln!("[prepare] Parsing {}", mgf_path.display());
 
         let parsed = parse_mgf(mgf_path, MIN_PEAKS, MAX_PEAKS);
         if parsed.stats.accepted == 0 {
@@ -176,9 +135,7 @@ pub fn run_with_sources_with_progress(
         let mut batch: Vec<NewSpectrum> = Vec::new();
 
         for spec in parsed.spectra {
-            if let Some(remaining) = remaining_budget
-                && remaining == 0
-            {
+            if remaining_budget == 0 {
                 stopped_due_to_max = true;
                 break;
             }
@@ -208,9 +165,7 @@ pub fn run_with_sources_with_progress(
                 peaks,
             });
 
-            if let Some(ref mut remaining) = remaining_budget {
-                *remaining = remaining.saturating_sub(1);
-            }
+            remaining_budget = remaining_budget.saturating_sub(1);
         }
 
         for chunk in batch.chunks(500) {
@@ -226,18 +181,15 @@ pub fn run_with_sources_with_progress(
         }
 
         inserted_total += inserted_source;
-        emit(
-            &mut progress,
-            &format!(
-                "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}, dropped_duplicate_mz={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
-                parsed.stats.ions_blocks,
-                parsed.stats.dropped_missing_name,
-                parsed.stats.dropped_missing_precursor_mz,
-                parsed.stats.dropped_too_few_peaks,
-                parsed.stats.dropped_too_many_peaks,
-                parsed.stats.dropped_nonpositive_intensity_peaks,
-                parsed.stats.dropped_duplicate_mz,
-            ),
+        eprintln!(
+            "[prepare] {source_label}: blocks={}, parsed={parsed_count}, dropped_missing_name={}, dropped_missing_precursor_mz={}, dropped_too_few_peaks={}, dropped_too_many_peaks={}, dropped_nonpositive_intensity_peaks={}, dropped_duplicate_mz={}, hash_duplicates={skipped_hash_duplicates}, inserted={inserted_source}, stopped_due_to_max={stopped_due_to_max}",
+            parsed.stats.ions_blocks,
+            parsed.stats.dropped_missing_name,
+            parsed.stats.dropped_missing_precursor_mz,
+            parsed.stats.dropped_too_few_peaks,
+            parsed.stats.dropped_too_many_peaks,
+            parsed.stats.dropped_nonpositive_intensity_peaks,
+            parsed.stats.dropped_duplicate_mz,
         );
 
         if stopped_due_to_max {
@@ -246,13 +198,10 @@ pub fn run_with_sources_with_progress(
     }
 
     if processed_sources == 0 {
-        emit(&mut progress, "[prepare] No source files were available");
+        eprintln!("[prepare] No source files were available");
     }
 
-    emit(
-        &mut progress,
-        &format!("[prepare] Inserted {inserted_total} new spectra"),
-    );
+    eprintln!("[prepare] Inserted {inserted_total} new spectra");
 }
 
 #[cfg(test)]
@@ -342,7 +291,7 @@ mod tests {
         let fixture = pesticide_fixture_path();
         let sources: [(&Path, &str); 1] = [(fixture.as_path(), "pesticides.mgf")];
 
-        run_with_sources(&mut conn, Some(total_unique), &sources);
+        run_with_sources(&mut conn, total_unique, &sources);
 
         let count_after_backfill = spectra::table
             .select(diesel::dsl::count_star())
@@ -350,7 +299,7 @@ mod tests {
             .expect("failed to count rows after backfill");
         assert_eq!(count_after_backfill, total_unique as i64);
 
-        run_with_sources(&mut conn, Some(total_unique), &sources);
+        run_with_sources(&mut conn, total_unique, &sources);
 
         let count_after_second_run = spectra::table
             .select(diesel::dsl::count_star())
@@ -415,7 +364,7 @@ END IONS"
         .expect("failed to write temporary mgf fixture");
 
         let sources: [(&Path, &str); 1] = [(fixture.path(), "title-only.mgf")];
-        run_with_sources(&mut conn, None, &sources);
+        run_with_sources(&mut conn, usize::MAX, &sources);
 
         let rows: Vec<(String, String)> = spectra::table
             .select((spectra::raw_name, spectra::source_file))
@@ -446,7 +395,7 @@ END IONS"
         .expect("failed to write temporary mgf fixture");
 
         let sources: [(&Path, &str); 1] = [(fixture.path(), "broken.mgf")];
-        run_with_sources(&mut conn, None, &sources);
+        run_with_sources(&mut conn, usize::MAX, &sources);
     }
 
     #[test]
@@ -471,7 +420,7 @@ END IONS"
         .expect("failed to write temporary mgf fixture");
 
         let sources: [(&Path, &str); 1] = [(fixture.path(), "mixed-intensity.mgf")];
-        run_with_sources(&mut conn, None, &sources);
+        run_with_sources(&mut conn, usize::MAX, &sources);
 
         let row: (i32, String) = spectra::table
             .select((spectra::num_peaks, spectra::peaks))
@@ -514,7 +463,7 @@ END IONS"
         .expect("failed to write temporary mgf fixture");
 
         let sources: [(&Path, &str); 1] = [(fixture.path(), "duplicate-mz.mgf")];
-        run_with_sources(&mut conn, None, &sources);
+        run_with_sources(&mut conn, usize::MAX, &sources);
 
         let rows: Vec<(String, i32)> = spectra::table
             .order(spectra::id.asc())

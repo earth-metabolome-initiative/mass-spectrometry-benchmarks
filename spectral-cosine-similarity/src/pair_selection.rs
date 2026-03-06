@@ -4,20 +4,6 @@ use rand::seq::index;
 
 const DEFAULT_SEED: u64 = 0xDEAD_BEEF_CAFE_BABE;
 
-/// Generate all spectrum ID pairs (including self-pairs).
-pub fn generate_pairs(ids: &[i32]) -> Vec<(i32, i32)> {
-    let mut pairs = Vec::with_capacity(ids.len() * (ids.len() + 1) / 2);
-
-    for (i, &a) in ids.iter().enumerate() {
-        pairs.push((a, a));
-        for &b in &ids[i + 1..] {
-            pairs.push((a, b));
-        }
-    }
-
-    pairs
-}
-
 fn flat_index_to_pair(ids: &[i32], k: usize) -> (i32, i32) {
     let mut row = (((1.0 + 8.0 * k as f64).sqrt() - 1.0) / 2.0) as usize;
     if (row + 1) * (row + 2) / 2 <= k {
@@ -46,26 +32,6 @@ pub fn sample_pairs(ids: &[i32], num_pairs: usize) -> Vec<(i32, i32)> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
-
-    #[test]
-    fn handles_empty_and_singleton_inputs() {
-        assert!(generate_pairs(&[]).is_empty());
-        assert_eq!(generate_pairs(&[7]), vec![(7, 7)]);
-    }
-
-    #[test]
-    fn generates_expected_pairs_without_mirrored_duplicates() {
-        let ids = [10, 20, 30];
-        let pairs = generate_pairs(&ids);
-
-        assert_eq!(
-            pairs,
-            vec![(10, 10), (10, 20), (10, 30), (20, 20), (20, 30), (30, 30)]
-        );
-        assert_eq!(pairs.len(), ids.len() * (ids.len() + 1) / 2);
-        assert!(!pairs.contains(&(20, 10)));
-        assert!(!pairs.contains(&(30, 10)));
-    }
 
     #[test]
     fn flat_index_to_pair_covers_full_triangle() {

@@ -11,24 +11,13 @@ use mass_spectrometry::prelude::*;
 use crate::db;
 use crate::models::*;
 use crate::pair_selection;
-use crate::progress::StageProgress;
 
 const FLUSH_BATCH: usize = 500;
 const SUBSTEP_UPDATE_INTERVAL: usize = 5_000;
 const GLOBAL_WARMUP_PAIR_SAMPLE: usize = 100;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RustAlgoKind {
-    CosineHungarian,
-    CosineGreedy,
-    LinearCosine,
-    ModifiedCosine,
-    ModifiedGreedyCosine,
-    ModifiedLinearCosine,
-    EntropySimilarityWeighted,
-    EntropySimilarityUnweighted,
-}
+type RunAlgoFn = fn(&mut SqliteConnection, &ComputeContext, &'static str) -> usize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Preprocessing {
@@ -37,12 +26,46 @@ enum Preprocessing {
     MsEntropyClean,
 }
 
-#[derive(Clone, Copy, Debug)]
 struct RustAlgoSpec {
-    kind: RustAlgoKind,
     algorithm_name: &'static str,
     preprocessing: Preprocessing,
+    run: RunAlgoFn,
 }
+
+macro_rules! define_algo_runner {
+    ($fn_name:ident, $builder:expr) => {
+        fn $fn_name(conn: &mut SqliteConnection, ctx: &ComputeContext, name: &'static str) -> usize {
+            compute_rust_algorithm(conn, ctx, name, |params| {
+                build_similarity_or_panic(name, params, || ($builder)(params))
+            })
+        }
+    };
+}
+
+define_algo_runner!(run_cosine_hungarian, |params: &ExperimentParams| {
+    HungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+});
+define_algo_runner!(run_cosine_greedy, |params: &ExperimentParams| {
+    GreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+});
+define_algo_runner!(run_linear_cosine, |params: &ExperimentParams| {
+    LinearCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+});
+define_algo_runner!(run_modified_cosine, |params: &ExperimentParams| {
+    ModifiedHungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+});
+define_algo_runner!(run_modified_greedy_cosine, |params: &ExperimentParams| {
+    ModifiedGreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+});
+define_algo_runner!(run_modified_linear_cosine, |params: &ExperimentParams| {
+    ModifiedLinearCosine::new(params.mz_power, params.intensity_power, params.tolerance)
+});
+define_algo_runner!(run_entropy_weighted, |params: &ExperimentParams| {
+    LinearEntropy::new(params.mz_power, params.intensity_power, params.tolerance, true)
+});
+define_algo_runner!(run_entropy_unweighted, |params: &ExperimentParams| {
+    LinearEntropy::new(params.mz_power, params.intensity_power, params.tolerance, false)
+});
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug)]
@@ -52,46 +75,14 @@ struct PythonAlgoSpec {
 }
 
 const RUST_ALGO_SPECS: [RustAlgoSpec; 8] = [
-    RustAlgoSpec {
-        kind: RustAlgoKind::CosineHungarian,
-        algorithm_name: "CosineHungarian",
-        preprocessing: Preprocessing::None,
-    },
-    RustAlgoSpec {
-        kind: RustAlgoKind::CosineGreedy,
-        algorithm_name: "CosineGreedy",
-        preprocessing: Preprocessing::None,
-    },
-    RustAlgoSpec {
-        kind: RustAlgoKind::LinearCosine,
-        algorithm_name: "LinearCosine",
-        preprocessing: Preprocessing::SiriusMerge,
-    },
-    RustAlgoSpec {
-        kind: RustAlgoKind::ModifiedCosine,
-        algorithm_name: "ModifiedCosine",
-        preprocessing: Preprocessing::None,
-    },
-    RustAlgoSpec {
-        kind: RustAlgoKind::ModifiedGreedyCosine,
-        algorithm_name: "ModifiedGreedyCosine",
-        preprocessing: Preprocessing::None,
-    },
-    RustAlgoSpec {
-        kind: RustAlgoKind::ModifiedLinearCosine,
-        algorithm_name: "ModifiedLinearCosine",
-        preprocessing: Preprocessing::SiriusMerge,
-    },
-    RustAlgoSpec {
-        kind: RustAlgoKind::EntropySimilarityWeighted,
-        algorithm_name: "EntropySimilarityWeighted",
-        preprocessing: Preprocessing::MsEntropyClean,
-    },
-    RustAlgoSpec {
-        kind: RustAlgoKind::EntropySimilarityUnweighted,
-        algorithm_name: "EntropySimilarityUnweighted",
-        preprocessing: Preprocessing::MsEntropyClean,
-    },
+    RustAlgoSpec { algorithm_name: "CosineHungarian", preprocessing: Preprocessing::None, run: run_cosine_hungarian },
+    RustAlgoSpec { algorithm_name: "CosineGreedy", preprocessing: Preprocessing::None, run: run_cosine_greedy },
+    RustAlgoSpec { algorithm_name: "LinearCosine", preprocessing: Preprocessing::SiriusMerge, run: run_linear_cosine },
+    RustAlgoSpec { algorithm_name: "ModifiedCosine", preprocessing: Preprocessing::None, run: run_modified_cosine },
+    RustAlgoSpec { algorithm_name: "ModifiedGreedyCosine", preprocessing: Preprocessing::None, run: run_modified_greedy_cosine },
+    RustAlgoSpec { algorithm_name: "ModifiedLinearCosine", preprocessing: Preprocessing::SiriusMerge, run: run_modified_linear_cosine },
+    RustAlgoSpec { algorithm_name: "EntropySimilarityWeighted", preprocessing: Preprocessing::MsEntropyClean, run: run_entropy_weighted },
+    RustAlgoSpec { algorithm_name: "EntropySimilarityUnweighted", preprocessing: Preprocessing::MsEntropyClean, run: run_entropy_unweighted },
 ];
 
 #[cfg(test)]
@@ -139,20 +130,6 @@ struct ComputeContext {
     id_pairs: Vec<(i32, i32)>,
 }
 
-fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
-    if let Some(p) = progress.as_deref_mut() {
-        p.set_message(message);
-    } else {
-        eprintln!("{message}");
-    }
-}
-
-fn inc_progress(progress: &mut Option<&mut dyn StageProgress>, units: u64) {
-    if let Some(p) = progress.as_deref_mut() {
-        p.inc(units);
-    }
-}
-
 pub fn preflight_python_environment() {
     let uv_check = Command::new("uv")
         .arg("--version")
@@ -196,76 +173,36 @@ pub fn preflight_python_environment() {
     }
 }
 
-/// Estimate total compute workload units (without checking existing results).
-pub fn estimate_work(
-    conn: &mut SqliteConnection,
-    max_spectra: Option<usize>,
-    num_pairs: Option<usize>,
-) -> u64 {
-    let n_spectra: i64 = {
-        let total = crate::schema::spectra::table
-            .select(diesel::dsl::count_star())
-            .first::<i64>(conn)
-            .expect("failed to count spectra");
-        if let Some(max) = max_spectra {
-            total.min(max as i64)
-        } else {
-            total
-        }
-    };
-    let total_pairs = n_spectra * (n_spectra + 1) / 2;
-    let n_pairs = if let Some(requested) = num_pairs {
-        total_pairs.min(requested as i64)
-    } else {
-        total_pairs
-    };
-    let n_experiments = crate::schema::experiments::table
-        .select(diesel::dsl::count_star())
-        .first::<i64>(conn)
-        .expect("failed to count experiments");
-    let n_implementations = crate::schema::implementations::table
-        .select(diesel::dsl::count_star())
-        .first::<i64>(conn)
-        .expect("failed to count implementations");
-    (n_pairs * n_experiments * n_implementations) as u64
-}
-
 /// Compute similarities and timings for all implementations (production entry point).
 pub fn run(
     conn: &mut SqliteConnection,
-    max_spectra: Option<usize>,
-    num_pairs: Option<usize>,
-    progress: Option<&mut dyn StageProgress>,
+    max_spectra: usize,
+    num_pairs: usize,
 ) {
-    run_with_python_runner(conn, max_spectra, num_pairs, run_python_default, progress);
+    run_with_python_runner(conn, max_spectra, num_pairs, run_python_default);
 }
 
 /// Compute similarities with an injectable Python runner (for tests).
 pub fn run_with_python_runner<F>(
     conn: &mut SqliteConnection,
-    max_spectra: Option<usize>,
-    num_pairs: Option<usize>,
+    max_spectra: usize,
+    num_pairs: usize,
     run_python: F,
-    mut progress: Option<&mut dyn StageProgress>,
 ) where
-    F: Fn(Option<usize>, Option<usize>),
+    F: Fn(),
 {
-    let context = load_compute_context(conn, max_spectra, num_pairs, &mut progress);
-    run_rust_compute_passes(conn, &context, &mut progress);
+    let context = load_compute_context(conn, max_spectra, num_pairs);
+    run_rust_compute_passes(conn, &context);
 
     let python_impl_count = python_implementation_ids(conn).len() as u64;
     if python_impl_count > 0 {
-        emit(&mut progress, "[compute] Python: running all algorithms");
-        run_python(max_spectra, num_pairs);
-        let expected_python_units = (context.id_pairs.len() as u64)
-            * (context.experiments.len() as u64)
-            * python_impl_count;
-        inc_progress(&mut progress, expected_python_units);
-        emit(&mut progress, "[compute] Python: complete");
+        eprintln!("[compute] Python: running all algorithms");
+        run_python();
+        eprintln!("[compute] Python: complete");
     }
 }
 
-fn run_python_default(max_spectra: Option<usize>, num_pairs: Option<usize>) {
+fn run_python_default() {
     let db = db::db_path();
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
@@ -274,14 +211,6 @@ fn run_python_default(max_spectra: Option<usize>, num_pairs: Option<usize>) {
     cmd.args(["run", "python3"]);
     cmd.arg(&script);
     cmd.arg(db);
-    if let Some(max_spectra) = max_spectra {
-        cmd.arg("--max-spectra");
-        cmd.arg(max_spectra.to_string());
-    }
-    if let Some(num_pairs) = num_pairs {
-        cmd.arg("--num-pairs");
-        cmd.arg(num_pairs.to_string());
-    }
     let status = cmd
         .status()
         .unwrap_or_else(|err| panic!("[compute] failed to launch `uv run python3`: {err}"));
@@ -310,20 +239,17 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
 
 fn load_compute_context(
     conn: &mut SqliteConnection,
-    max_spectra: Option<usize>,
-    num_pairs: Option<usize>,
-    progress: &mut Option<&mut dyn StageProgress>,
+    max_spectra: usize,
+    num_pairs: usize,
 ) -> ComputeContext {
     let experiments = db::load_experiments(conn);
 
-    let mut spectra_query = crate::schema::spectra::table
+    let limit = i64::try_from(max_spectra).unwrap_or(i64::MAX);
+    let all_spectra: Vec<SpectrumRow> = crate::schema::spectra::table
         .order(crate::schema::spectra::id.asc())
-        .into_boxed();
-    if let Some(max_spectra) = max_spectra {
-        let limit = i64::try_from(max_spectra).unwrap_or(i64::MAX);
-        spectra_query = spectra_query.limit(limit);
-    }
-    let all_spectra: Vec<SpectrumRow> = spectra_query.load(conn).expect("failed to load spectra");
+        .limit(limit)
+        .load(conn)
+        .expect("failed to load spectra");
 
     let spectrum_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
     let spectra_map: HashMap<i32, GenericSpectrum<f64, f64>> = all_spectra
@@ -331,19 +257,25 @@ fn load_compute_context(
         .map(|s| (s.id, s.to_generic_spectrum()))
         .collect();
 
-    let id_pairs = if let Some(n) = num_pairs {
-        emit(progress, &format!("[compute] Sampling {n} pairs"));
-        pair_selection::sample_pairs(&spectrum_ids, n)
-    } else {
-        let total = spectrum_ids.len() * (spectrum_ids.len() + 1) / 2;
-        emit(progress, &format!("[compute] Generating {total} pairs"));
-        pair_selection::generate_pairs(&spectrum_ids)
-    };
+    eprintln!("[compute] Sampling {num_pairs} pairs");
+    let id_pairs = pair_selection::sample_pairs(&spectrum_ids, num_pairs);
 
-    emit(
-        progress,
-        &format!("[compute] {} pairs ready", id_pairs.len()),
-    );
+    eprintln!("[compute] {} pairs ready", id_pairs.len());
+
+    // Write selected pairs to DB so Python reads the same set.
+    diesel::delete(crate::schema::selected_pairs::table)
+        .execute(conn)
+        .expect("failed to clear selected_pairs");
+    for chunk in id_pairs.chunks(FLUSH_BATCH) {
+        let new_pairs: Vec<NewSelectedPair> = chunk
+            .iter()
+            .map(|&(l, r)| NewSelectedPair { left_id: l, right_id: r })
+            .collect();
+        diesel::insert_into(crate::schema::selected_pairs::table)
+            .values(&new_pairs)
+            .execute(conn)
+            .expect("failed to insert selected_pairs");
+    }
 
     ComputeContext {
         experiments,
@@ -357,7 +289,6 @@ fn compute_rust_algorithm<B, S>(
     conn: &mut SqliteConnection,
     context: &ComputeContext,
     algorithm_name: &str,
-    progress: &mut Option<&mut dyn StageProgress>,
     build_similarity: B,
 ) -> usize
 where
@@ -373,17 +304,11 @@ where
     let work_len = context.id_pairs.len() * context.experiments.len();
 
     if work_len == 0 {
-        emit(
-            progress,
-            &format!("[compute] {algorithm_label}: nothing to compute"),
-        );
+        eprintln!("[compute] {algorithm_label}: nothing to compute");
         return 0;
     }
 
-    emit(
-        progress,
-        &format!("[compute] {algorithm_label}: 0/{work_len}"),
-    );
+    eprintln!("[compute] {algorithm_label}: 0/{work_len}");
 
     let mut batch: Vec<NewResult> = Vec::with_capacity(FLUSH_BATCH);
     let mut total_done: usize = 0;
@@ -468,115 +393,20 @@ where
             });
 
             total_done += 1;
-            inc_progress(progress, 1);
 
             if batch.len() >= FLUSH_BATCH {
                 flush_results(conn, &mut batch);
             }
 
             if total_done == work_len || total_done.is_multiple_of(SUBSTEP_UPDATE_INTERVAL) {
-                emit(
-                    progress,
-                    &format!("[compute] {algorithm_label}: {total_done}/{work_len}"),
-                );
+                eprintln!("[compute] {algorithm_label}: {total_done}/{work_len}");
             }
         }
     }
 
     flush_results(conn, &mut batch);
-    emit(
-        progress,
-        &format!("[compute] {algorithm_label}: {total_done} pairs computed"),
-    );
+    eprintln!("[compute] {algorithm_label}: {total_done} pairs computed");
     total_done
-}
-
-fn compute_rust_algorithm_for_kind(
-    conn: &mut SqliteConnection,
-    context: &ComputeContext,
-    spec: RustAlgoSpec,
-    progress: &mut Option<&mut dyn StageProgress>,
-) -> usize {
-    match spec.kind {
-        RustAlgoKind::CosineHungarian => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    HungarianCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-                })
-            })
-        }
-        RustAlgoKind::CosineGreedy => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    GreedyCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-                })
-            })
-        }
-        RustAlgoKind::LinearCosine => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    LinearCosine::new(params.mz_power, params.intensity_power, params.tolerance)
-                })
-            })
-        }
-        RustAlgoKind::ModifiedCosine => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    ModifiedHungarianCosine::new(
-                        params.mz_power,
-                        params.intensity_power,
-                        params.tolerance,
-                    )
-                })
-            })
-        }
-        RustAlgoKind::ModifiedGreedyCosine => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    ModifiedGreedyCosine::new(
-                        params.mz_power,
-                        params.intensity_power,
-                        params.tolerance,
-                    )
-                })
-            })
-        }
-        RustAlgoKind::ModifiedLinearCosine => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    ModifiedLinearCosine::new(
-                        params.mz_power,
-                        params.intensity_power,
-                        params.tolerance,
-                    )
-                })
-            })
-        }
-        RustAlgoKind::EntropySimilarityWeighted => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    LinearEntropy::new(
-                        params.mz_power,
-                        params.intensity_power,
-                        params.tolerance,
-                        true,
-                    )
-                })
-            })
-        }
-        RustAlgoKind::EntropySimilarityUnweighted => {
-            compute_rust_algorithm(conn, context, spec.algorithm_name, progress, |params| {
-                build_similarity_or_panic(spec.algorithm_name, params, || {
-                    LinearEntropy::new(
-                        params.mz_power,
-                        params.intensity_power,
-                        params.tolerance,
-                        false,
-                    )
-                })
-            })
-        }
-    }
 }
 
 fn build_sirius_merged_context(context: &ComputeContext) -> ComputeContext {
@@ -625,9 +455,8 @@ fn build_entropy_cleaned_context(context: &ComputeContext) -> ComputeContext {
 fn run_rust_compute_passes(
     conn: &mut SqliteConnection,
     context: &ComputeContext,
-    progress: &mut Option<&mut dyn StageProgress>,
 ) {
-    emit(progress, "[compute] Starting Rust algorithms");
+    eprintln!("[compute] Starting Rust algorithms");
 
     let any_sirius = RUST_ALGO_SPECS
         .iter()
@@ -656,7 +485,7 @@ fn run_rust_compute_passes(
                 entropy_context.as_ref().expect("entropy context must exist")
             }
         };
-        compute_rust_algorithm_for_kind(conn, effective_context, spec, progress);
+        (spec.run)(conn, effective_context, spec.algorithm_name);
     }
 }
 

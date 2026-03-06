@@ -7,8 +7,6 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::progress::StageProgress;
-
 pub const DATASET_PATH: &str = "fixtures/ALL_GNPS_cleaned.mgf";
 pub const DATASET_FILENAME: &str = "ALL_GNPS_cleaned.mgf";
 
@@ -40,14 +38,6 @@ fn md5_hex(path: &Path) -> std::io::Result<String> {
     Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
-    if let Some(p) = progress.as_deref_mut() {
-        p.set_message(message);
-    } else {
-        eprintln!("{message}");
-    }
-}
-
 fn should_retry_status(status: StatusCode) -> bool {
     status == StatusCode::FORBIDDEN
         || status == StatusCode::TOO_MANY_REQUESTS
@@ -57,24 +47,17 @@ fn should_retry_status(status: StatusCode) -> bool {
 fn try_download(
     client: &reqwest::blocking::Client,
     urls: &[&'static str],
-    progress: &mut Option<&mut dyn StageProgress>,
 ) -> (reqwest::blocking::Response, &'static str) {
     let mut failures: Vec<String> = Vec::new();
 
     for (url_index, &url) in urls.iter().enumerate() {
         if url_index > 0 {
-            emit(
-                progress,
-                &format!("[download] Falling back to alternate URL: {url}"),
-            );
+            eprintln!("[download] Falling back to alternate URL: {url}");
         }
 
         for attempt in 1..=MAX_DOWNLOAD_ATTEMPTS {
             if attempt > 1 {
-                emit(
-                    progress,
-                    &format!("[download] Retry {attempt}/{MAX_DOWNLOAD_ATTEMPTS} for {url}"),
-                );
+                eprintln!("[download] Retry {attempt}/{MAX_DOWNLOAD_ATTEMPTS} for {url}");
             }
 
             match client.get(url).send() {
@@ -111,15 +94,12 @@ fn try_download(
     );
 }
 
-pub fn run(mut progress: Option<&mut dyn StageProgress>) {
+pub fn run() {
     let final_path = Path::new(DATASET_PATH);
     let part_path = Path::new(DATASET_PART_PATH);
 
     if part_path.exists() {
-        emit(
-            &mut progress,
-            &format!("[download] Removing stale partial file {DATASET_PART_PATH}"),
-        );
+        eprintln!("[download] Removing stale partial file {DATASET_PART_PATH}");
         std::fs::remove_file(part_path).unwrap_or_else(|e| {
             panic!(
                 "failed to remove stale partial file {}: {e}",
@@ -129,28 +109,19 @@ pub fn run(mut progress: Option<&mut dyn StageProgress>) {
     }
 
     if final_path.exists() {
-        emit(
-            &mut progress,
-            &format!("[download] Checking md5 digest for existing {DATASET_PATH}"),
-        );
+        eprintln!("[download] Checking md5 digest for existing {DATASET_PATH}");
         match md5_hex(final_path) {
             Ok(actual) if actual == EXPECTED_MD5 => {
-                emit(
-                    &mut progress,
-                    &format!(
-                        "[download] {} already verified (md5={actual}), skipping",
-                        DATASET_PATH
-                    ),
+                eprintln!(
+                    "[download] {} already verified (md5={actual}), skipping",
+                    DATASET_PATH
                 );
                 return;
             }
             Ok(actual) => {
-                emit(
-                    &mut progress,
-                    &format!(
-                        "[download] Existing {} failed md5 verification (expected {EXPECTED_MD5}, actual {actual}); redownloading",
-                        DATASET_PATH
-                    ),
+                eprintln!(
+                    "[download] Existing {} failed md5 verification (expected {EXPECTED_MD5}, actual {actual}); redownloading",
+                    DATASET_PATH
                 );
                 std::fs::remove_file(final_path).unwrap_or_else(|e| {
                     panic!("failed to remove invalid existing {}: {e}", DATASET_PATH)
@@ -162,12 +133,9 @@ pub fn run(mut progress: Option<&mut dyn StageProgress>) {
         }
     }
 
-    emit(
-        &mut progress,
-        &format!(
-            "[download] Downloading to {} (primary URL: {})",
-            DATASET_PART_PATH, ZENODO_API_URL
-        ),
+    eprintln!(
+        "[download] Downloading to {} (primary URL: {})",
+        DATASET_PART_PATH, ZENODO_API_URL
     );
 
     let client = reqwest::blocking::Client::builder()
@@ -177,7 +145,7 @@ pub fn run(mut progress: Option<&mut dyn StageProgress>) {
         .expect("failed to build HTTP client");
 
     let urls: &[&str] = &[ZENODO_API_URL, ZENODO_DIRECT_URL];
-    let (mut response, downloaded_from_url) = try_download(&client, urls, &mut progress);
+    let (mut response, downloaded_from_url) = try_download(&client, urls);
 
     let mut part_file = File::create(part_path)
         .unwrap_or_else(|e| panic!("failed to create {}: {e}", DATASET_PART_PATH));
@@ -207,7 +175,7 @@ pub fn run(mut progress: Option<&mut dyn StageProgress>) {
                 ),
                 _ => format!("[download] {:.1} MB", total as f64 / BYTES_PER_MIB),
             };
-            emit(&mut progress, &msg);
+            eprintln!("{msg}");
             last_reported_at = Instant::now();
         }
     }
@@ -216,7 +184,7 @@ pub fn run(mut progress: Option<&mut dyn StageProgress>) {
         .sync_all()
         .unwrap_or_else(|e| panic!("failed to sync {}: {e}", DATASET_PART_PATH));
 
-    emit(&mut progress, "[download] Verifying md5 digest");
+    eprintln!("[download] Verifying md5 digest");
     let actual_digest = md5_hex(part_path).unwrap_or_else(|e| {
         panic!("failed to verify md5 for {}: {e}", DATASET_PART_PATH)
     });
@@ -239,13 +207,10 @@ pub fn run(mut progress: Option<&mut dyn StageProgress>) {
         )
     });
 
-    emit(
-        &mut progress,
-        &format!(
-            "[download] Saved {} ({:.1} MB)",
-            DATASET_PATH,
-            total as f64 / BYTES_PER_MIB
-        ),
+    eprintln!(
+        "[download] Saved {} ({:.1} MB)",
+        DATASET_PATH,
+        total as f64 / BYTES_PER_MIB
     );
 }
 

@@ -5,7 +5,6 @@ description = "Python scripts for matchms benchmarking"
 requires-python = ">=3.10"
 dependencies = [
     "matchms>=0.18",
-    "ms-entropy",
+    "ms-entropy>=1.4.0,<2",
     "numpy",
-    "tqdm",
 ]

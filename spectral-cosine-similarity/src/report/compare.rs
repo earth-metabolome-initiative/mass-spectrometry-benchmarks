@@ -3,17 +3,7 @@ use diesel::sql_query;
 use diesel::sql_types::{Double, Integer, Text};
 use diesel::sqlite::SqliteConnection;
 
-use crate::progress::StageProgress;
-
 use super::types::algorithm_uses_match_count_parity;
-
-fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
-    if let Some(progress) = progress.as_deref_mut() {
-        progress.set_message(message);
-    } else {
-        eprintln!("{message}");
-    }
-}
 
 #[derive(QueryableByName)]
 #[allow(dead_code)]
@@ -40,14 +30,8 @@ struct ComparisonRow {
     reference_matches: i32,
 }
 
-pub(crate) fn compare_results(
-    conn: &mut SqliteConnection,
-    mut progress: Option<&mut dyn StageProgress>,
-) {
-    emit(
-        &mut progress,
-        "[report] Comparing Rust results against references",
-    );
+pub(crate) fn compare_results(conn: &mut SqliteConnection) {
+    eprintln!("[report] Comparing Rust results against references");
 
     let rows: Vec<ComparisonRow> = sql_query(
         "SELECT a.name AS algorithm_name,
@@ -79,10 +63,7 @@ pub(crate) fn compare_results(
     .expect("failed to compare results");
 
     if rows.is_empty() {
-        emit(
-            &mut progress,
-            "[report] No Rust-vs-reference comparisons available yet.",
-        );
+        eprintln!("[report] No Rust-vs-reference comparisons available yet.");
         return;
     }
 
@@ -117,23 +98,13 @@ pub(crate) fn compare_results(
 
     let rmse = (sum_sq_score / rows.len() as f64).sqrt();
 
-    if progress.is_some() {
-        emit(
-            &mut progress,
-            &format!(
-                "[report] Compared {} pair(s), mismatch_count={mismatch_count}, rmse={rmse:.6e}",
-                rows.len()
-            ),
-        );
-    } else {
-        eprintln!("[report] Cross-implementation comparison (Rust vs DB-marked reference):");
-        eprintln!("[report]   Pairs compared: {}", rows.len());
-        eprintln!(
-            "[report]   Mismatches: score>1e-6 for all algorithms; matches must also agree for cosine-family algorithms"
-        );
-        eprintln!("[report]   Mismatch count: {mismatch_count}");
-        eprintln!("[report]   Max score diff: {max_score_diff:.6e}");
-        eprintln!("[report]   Max match diff: {max_match_diff}");
-        eprintln!("[report]   RMSE (score): {rmse:.6e}");
-    }
+    eprintln!("[report] Cross-implementation comparison (Rust vs DB-marked reference):");
+    eprintln!("[report]   Pairs compared: {}", rows.len());
+    eprintln!(
+        "[report]   Mismatches: score>1e-6 for all algorithms; matches must also agree for cosine-family algorithms"
+    );
+    eprintln!("[report]   Mismatch count: {mismatch_count}");
+    eprintln!("[report]   Max score diff: {max_score_diff:.6e}");
+    eprintln!("[report]   Max match diff: {max_match_diff}");
+    eprintln!("[report]   RMSE (score): {rmse:.6e}");
 }

@@ -5,17 +5,17 @@ use super::types::FacetedLineChart;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RunScopeMetadata {
-    pub requested_max_spectra: Option<usize>,
+    pub requested_max_spectra: usize,
     pub total_spectra_in_db: i64,
     pub spectra_used_in_results: i64,
 }
 
 fn append_run_scope_markdown(markdown: &mut String, run_scope: &RunScopeMetadata) {
-    let requested = run_scope
-        .requested_max_spectra
-        .map_or_else(|| "unbounded".to_string(), |n| n.to_string());
     markdown.push_str("## Run Scope\n\n");
-    markdown.push_str(&format!("- Requested max spectra: `{requested}`\n"));
+    markdown.push_str(&format!(
+        "- Requested max spectra: `{}`\n",
+        run_scope.requested_max_spectra
+    ));
     markdown.push_str(&format!(
         "- Total spectra in DB: `{}`\n",
         run_scope.total_spectra_in_db

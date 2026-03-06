@@ -128,6 +128,15 @@ pub struct NewSpectrum {
     pub peaks: Peaks,
 }
 
+// --- Selected Pairs ---
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = selected_pairs)]
+pub struct NewSelectedPair {
+    pub left_id: i32,
+    pub right_id: i32,
+}
+
 // --- Results ---
 
 #[derive(Queryable, Selectable, Debug)]

@@ -59,6 +59,13 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    selected_pairs (left_id, right_id) {
+        left_id -> Integer,
+        right_id -> Integer,
+    }
+}
+
 diesel::joinable!(implementations -> algorithms (algorithm_id));
 diesel::joinable!(implementations -> libraries (library_id));
 diesel::joinable!(results -> experiments (experiment_id));
@@ -71,4 +78,5 @@ diesel::allow_tables_to_appear_in_same_query!(
     experiments,
     spectra,
     results,
+    selected_pairs,
 );

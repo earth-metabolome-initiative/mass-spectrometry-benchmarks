@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS results (
 CREATE INDEX IF NOT EXISTS idx_results_impl_pair_exp
 ON results(implementation_id, left_id, right_id, experiment_id);
 
+-- Selected spectrum pairs (shared between Rust and Python)
+CREATE TABLE IF NOT EXISTS selected_pairs (
+    left_id INTEGER NOT NULL REFERENCES spectra(id),
+    right_id INTEGER NOT NULL REFERENCES spectra(id),
+    CHECK (left_id <= right_id),
+    PRIMARY KEY (left_id, right_id)
+) STRICT, WITHOUT ROWID;
+
 -- Canonical/reference topology derived from schema regularities.
 CREATE VIEW IF NOT EXISTS v_implementation_topology AS
 SELECT i.id AS implementation_id,

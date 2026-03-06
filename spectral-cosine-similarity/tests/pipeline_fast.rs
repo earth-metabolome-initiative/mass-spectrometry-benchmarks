@@ -20,7 +20,7 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let db_path = test_db.db_path.to_string_lossy().to_string();
-    compute::run_with_python_runner(&mut test_db.conn, Some(3), None, move |_, _| {
+    compute::run_with_python_runner(&mut test_db.conn, 3, 6, move || {
         let status = Command::new("uv")
             .current_dir(&manifest_dir)
             .env("UV_CACHE_DIR", &uv_cache)
@@ -36,14 +36,14 @@ fn tiny_full_pipeline_produces_expected_rows_and_artifacts() {
             status.success(),
             "python reference compute script failed: {status}"
         );
-    }, None);
+    });
 
     let output_dir = TempDir::new().expect("failed to create temporary output directory");
     let report_config = report::ReportConfig {
         output_dir: output_dir.path().to_path_buf(),
         ..report::ReportConfig::default()
     };
-    report::generate(&mut test_db.conn, &report_config, None);
+    report::generate(&mut test_db.conn, &report_config);
 
     assert!(output_dir.path().join("timing.svg").exists());
     assert!(output_dir.path().join("rmse.svg").exists());
@@ -79,7 +79,7 @@ fn compute_honors_max_spectra_when_db_contains_more_rows() {
     let mut test_db = common::TestDb::new();
     common::prepare_small_dataset(&mut test_db.conn, 5);
 
-    compute::run_with_python_runner(&mut test_db.conn, Some(3), None, |_, _| {}, None);
+    compute::run_with_python_runner(&mut test_db.conn, 3, 6, || {});
 
     let experiments_count = experiments::table
         .select(count_star())

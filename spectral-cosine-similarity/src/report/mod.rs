@@ -16,8 +16,6 @@ use diesel::sql_query;
 use diesel::sql_types::BigInt;
 use diesel::sqlite::SqliteConnection;
 
-use crate::progress::StageProgress;
-
 use aggregate::{MetricKind, build_metric_chart_from_aggregates, omit_empty_buckets};
 use data::{load_rmse_aggregate_rows, load_timing_aggregate_rows, series_pairs_from_aggregates};
 use markdown::{RunScopeMetadata, write_markdown_tables};
@@ -48,7 +46,7 @@ pub struct ReportConfig {
     pub artifact_names: ArtifactNames,
     pub include_comparison: bool,
     pub prune_empty_buckets: bool,
-    pub requested_max_spectra: Option<usize>,
+    pub requested_max_spectra: usize,
 }
 
 impl Default for ReportConfig {
@@ -58,7 +56,7 @@ impl Default for ReportConfig {
             artifact_names: ArtifactNames::default(),
             include_comparison: true,
             prune_empty_buckets: true,
-            requested_max_spectra: None,
+            requested_max_spectra: 0,
         }
     }
 }
@@ -74,14 +72,6 @@ pub struct ReportArtifacts {
 struct CountRow {
     #[diesel(sql_type = BigInt)]
     n: i64,
-}
-
-fn emit(progress: &mut Option<&mut dyn StageProgress>, message: &str) {
-    if let Some(progress) = progress.as_deref_mut() {
-        progress.set_message(message);
-    } else {
-        eprintln!("{message}");
-    }
 }
 
 fn remove_file_if_exists(path: &Path) {
@@ -116,7 +106,6 @@ fn total_spectra_count(conn: &mut SqliteConnection) -> i64 {
 fn render_chart_artifact(
     chart: &FacetedLineChart,
     output_path: &Path,
-    progress: &mut Option<&mut dyn StageProgress>,
     render_message: &str,
 ) -> Option<PathBuf> {
     if chart.facets.is_empty() || chart.bucket_labels.is_empty() {
@@ -124,27 +113,23 @@ fn render_chart_artifact(
         return None;
     }
 
-    emit(progress, render_message);
+    eprintln!("{render_message}");
     render_faceted_line_chart(chart, output_path.to_string_lossy().as_ref())
         .unwrap_or_else(|err| panic!("failed to render chart {}: {err}", output_path.display()));
-    emit(
-        progress,
-        &format!("[report] Written {}", output_path.display()),
-    );
+    eprintln!("[report] Written {}", output_path.display());
     Some(output_path.to_path_buf())
 }
 
 pub fn generate(
     conn: &mut SqliteConnection,
     cfg: &ReportConfig,
-    mut progress: Option<&mut dyn StageProgress>,
 ) -> ReportArtifacts {
-    emit(&mut progress, "[report] Generating charts");
+    eprintln!("[report] Generating charts");
     fs::create_dir_all(&cfg.output_dir).expect("failed to create output directory");
     let total_spectra = total_spectra_count(conn);
     let spectra_used = spectra_used_in_results_count(conn);
 
-    emit(&mut progress, "[report] Loading aggregated result data");
+    eprintln!("[report] Loading aggregated result data");
     let timing_rows = load_timing_aggregate_rows(conn);
     let rmse_rows = load_rmse_aggregate_rows(conn);
     let mut series_pairs = series_pairs_from_aggregates(&timing_rows);
@@ -171,7 +156,6 @@ pub fn generate(
     let timing_svg = render_chart_artifact(
         &timing_chart,
         &timing_path,
-        &mut progress,
         "[report] Rendering timing chart",
     );
 
@@ -179,7 +163,6 @@ pub fn generate(
     let rmse_svg = render_chart_artifact(
         &rmse_chart,
         &rmse_path,
-        &mut progress,
         "[report] Rendering RMSE chart",
     );
 
@@ -190,13 +173,10 @@ pub fn generate(
         spectra_used_in_results: spectra_used,
     };
     write_markdown_tables(&markdown_path, &[&timing_chart, &rmse_chart], &run_scope);
-    emit(
-        &mut progress,
-        &format!("[report] Written {}", markdown_path.display()),
-    );
+    eprintln!("[report] Written {}", markdown_path.display());
 
     if cfg.include_comparison {
-        compare::compare_results(conn, progress);
+        compare::compare_results(conn);
     }
 
     ReportArtifacts {
@@ -378,7 +358,7 @@ mod tests {
             include_comparison: false,
             ..ReportConfig::default()
         };
-        generate(&mut conn, &config, None);
+        generate(&mut conn, &config);
 
         assert!(
             !timing_path.exists(),
@@ -396,7 +376,7 @@ mod tests {
         let markdown = fs::read_to_string(&markdown_path).expect("failed to read markdown report");
         assert!(markdown.contains("# Benchmark Tables"));
         assert!(markdown.contains("## Run Scope"));
-        assert!(markdown.contains("Requested max spectra: `unbounded`"));
+        assert!(markdown.contains("Requested max spectra: `0`"));
         assert!(markdown.contains("Total spectra in DB: `0`"));
         assert!(markdown.contains("Spectra used in results: `0`"));
         assert!(markdown.contains("## Timing by Peak Count"));

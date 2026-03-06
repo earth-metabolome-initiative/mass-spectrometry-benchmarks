@@ -35,5 +35,5 @@ pub fn pesticide_fixture_path() -> PathBuf {
 pub fn prepare_small_dataset(conn: &mut SqliteConnection, max_spectra: usize) {
     let fixture = pesticide_fixture_path();
     let sources: [(&Path, &str); 1] = [(fixture.as_path(), "pesticides.mgf")];
-    prepare::run_with_sources(conn, Some(max_spectra), &sources);
+    prepare::run_with_sources(conn, max_spectra, &sources);
 }
