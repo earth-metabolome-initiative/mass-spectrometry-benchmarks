@@ -146,10 +146,12 @@ pub(crate) fn build_metric_chart_from_aggregates(
 
     FacetedLineChart {
         title: metric.chart_title().to_string(),
+        x_label: "Min number of peaks".to_string(),
         y_label: metric.y_label().to_string(),
         bucket_labels: labels,
         facets,
         log_y: metric.use_log_scale(),
+        square_facets: false,
     }
 }
 
@@ -314,10 +316,12 @@ pub(crate) fn build_correlation_chart(
 
     let chart = FacetedLineChart {
         title: "Spectral Similarity vs Structural Similarity (Tanimoto)".to_string(),
+        x_label: "Tanimoto similarity".to_string(),
         y_label: "Mean spectral similarity".to_string(),
         bucket_labels: labels,
         facets,
         log_y: false,
+        square_facets: true,
     };
 
     (chart, stats_list)
@@ -377,19 +381,23 @@ fn rank(values: &[f64]) -> Vec<f64> {
 pub(crate) fn omit_empty_buckets(chart: FacetedLineChart) -> FacetedLineChart {
     let FacetedLineChart {
         title,
+        x_label,
         y_label,
         bucket_labels,
         facets,
         log_y,
+        square_facets,
     } = chart;
 
     if bucket_labels.is_empty() || facets.is_empty() {
         return FacetedLineChart {
             title,
+            x_label,
             y_label,
             bucket_labels,
             facets,
             log_y,
+            square_facets,
         };
     }
 
@@ -405,10 +413,12 @@ pub(crate) fn omit_empty_buckets(chart: FacetedLineChart) -> FacetedLineChart {
     if keep_indices.len() == bucket_labels.len() {
         return FacetedLineChart {
             title,
+            x_label,
             y_label,
             bucket_labels,
             facets,
             log_y,
+            square_facets,
         };
     }
 
@@ -457,10 +467,12 @@ pub(crate) fn omit_empty_buckets(chart: FacetedLineChart) -> FacetedLineChart {
 
     FacetedLineChart {
         title,
+        x_label,
         y_label,
         bucket_labels: filtered_labels,
         facets: filtered_facets,
         log_y,
+        square_facets,
     }
 }
 

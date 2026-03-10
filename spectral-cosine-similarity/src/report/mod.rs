@@ -370,6 +370,7 @@ mod tests {
     fn omit_empty_buckets_drops_columns_with_no_observations() {
         let chart = FacetedLineChart {
             title: "test".to_string(),
+            x_label: "x".to_string(),
             y_label: "y".to_string(),
             bucket_labels: vec!["A".to_string(), "B".to_string(), "C".to_string()],
             facets: vec![FacetChart {
@@ -394,6 +395,7 @@ mod tests {
                 ],
             }],
             log_y: true,
+            square_facets: false,
         };
 
         let pruned = omit_empty_buckets(chart);

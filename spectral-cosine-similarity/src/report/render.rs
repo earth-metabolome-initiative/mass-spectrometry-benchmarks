@@ -56,10 +56,12 @@ pub(crate) struct FacetChart {
 #[derive(Clone, Debug)]
 pub(crate) struct FacetedLineChart {
     pub(crate) title: String,
+    pub(crate) x_label: String,
     pub(crate) y_label: String,
     pub(crate) bucket_labels: Vec<String>,
     pub(crate) facets: Vec<FacetChart>,
     pub(crate) log_y: bool,
+    pub(crate) square_facets: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -388,7 +390,7 @@ where
                 .light_line_style(BLACK.mix(0.15))
                 .x_labels(n_buckets)
                 .x_label_formatter(&x_label_fmt)
-                .x_desc("Min number of peaks")
+                .x_desc(&chart.x_label)
                 .y_desc(&chart.y_label)
                 .y_label_formatter(&|v| format!("{v:.0e}"))
                 .draw()?;
@@ -403,13 +405,18 @@ where
                 .y_label_area_size(72)
                 .build_cartesian_2d(x_range, 0f64..y_max)?;
 
+            let y_fmt: Box<dyn Fn(&f64) -> String> = if chart.square_facets {
+                Box::new(|v: &f64| format!("{v:.1}"))
+            } else {
+                Box::new(|v: &f64| format!("{v:.1e}"))
+            };
             ctx.configure_mesh()
                 .disable_x_mesh()
                 .x_labels(n_buckets)
                 .x_label_formatter(&x_label_fmt)
-                .x_desc("Min number of peaks")
+                .x_desc(&chart.x_label)
                 .y_desc(&chart.y_label)
-                .y_label_formatter(&|v| format!("{v:.1e}"))
+                .y_label_formatter(&y_fmt)
                 .draw()?;
             draw_facet_series(&mut ctx, &facet.series, false, 0.0)?;
         }
@@ -430,8 +437,13 @@ pub(crate) fn render_faceted_line_chart(
     let cols = ((n_facets as f64).sqrt().ceil() as usize).max(1);
     let rows = n_facets.div_ceil(cols);
 
-    let width = 920u32 * cols as u32;
-    let height = 420u32 * rows as u32;
+    let (cell_w, cell_h) = if chart.square_facets {
+        (620u32, 620u32)
+    } else {
+        (920u32, 420u32)
+    };
+    let width = cell_w * cols as u32;
+    let height = cell_h * rows as u32;
 
     let root = SVGBackend::new(path, (width, height)).into_drawing_area();
     root.fill(&WHITE)?;

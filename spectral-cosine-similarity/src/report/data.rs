@@ -226,6 +226,8 @@ pub(crate) fn load_correlation_rows(conn: &mut SqliteConnection) -> Vec<Correlat
                  JOIN fingerprint_algorithms fa
                    ON fa.id = t.fingerprint_algorithm_id
                  WHERE vt.canonical_reference_implementation_id IS NOT NULL
+                  AND vt.library_name = 'mass-spectrometry-traits'
+                  AND vt.algorithm_name NOT IN ('LinearCosine', 'ModifiedLinearCosine', 'ModifiedCosineMerged')
                  ORDER BY fa.name, series_label";
 
     sql_query(query)
