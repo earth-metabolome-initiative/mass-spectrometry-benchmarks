@@ -95,6 +95,50 @@ pub struct ExperimentParams {
     pub n_reps: u32,
 }
 
+// --- Molecules ---
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = molecules)]
+pub struct Molecule {
+    pub id: i32,
+    pub smiles: String,
+    pub inchikey: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = molecules)]
+pub struct NewMolecule {
+    pub smiles: String,
+    pub inchikey: String,
+}
+
+// --- Fingerprint Algorithms ---
+
+#[derive(Queryable, Selectable, Debug)]
+#[diesel(table_name = fingerprint_algorithms)]
+pub struct FingerprintAlgorithm {
+    pub id: i32,
+    pub name: String,
+    pub params: String,
+}
+
+#[derive(Insertable, Debug)]
+#[diesel(table_name = fingerprint_algorithms)]
+pub struct NewFingerprintAlgorithm<'a> {
+    pub name: &'a str,
+    pub params: &'a str,
+}
+
+// --- Fingerprints ---
+
+#[derive(Queryable, Selectable, Insertable, Debug)]
+#[diesel(table_name = fingerprints)]
+pub struct Fingerprint {
+    pub molecule_id: i32,
+    pub fingerprint_algorithm_id: i32,
+    pub fingerprint: Vec<u8>,
+}
+
 // --- Spectra ---
 
 #[derive(Queryable, Selectable, Debug)]
@@ -108,10 +152,11 @@ pub struct SpectrumRow {
     pub precursor_mz: f64,
     pub num_peaks: i32,
     pub peaks: Peaks,
+    pub molecule_id: i32,
 }
 
 impl SpectrumRow {
-    pub fn to_generic_spectrum(&self) -> mass_spectrometry::prelude::GenericSpectrum<f64, f64> {
+    pub fn to_generic_spectrum(&self) -> mass_spectrometry::prelude::GenericSpectrum {
         self.peaks.to_generic_spectrum(self.precursor_mz)
     }
 }
@@ -126,6 +171,7 @@ pub struct NewSpectrum {
     pub precursor_mz: f64,
     pub num_peaks: i32,
     pub peaks: Peaks,
+    pub molecule_id: i32,
 }
 
 // --- Selected Pairs ---
@@ -161,4 +207,15 @@ pub struct NewResult {
     pub score: f64,
     pub matches: i32,
     pub median_time_us: f64,
+}
+
+// --- Tanimoto Results ---
+
+#[derive(Queryable, Selectable, Insertable, Debug)]
+#[diesel(table_name = tanimoto_results)]
+pub struct TanimotoResult {
+    pub left_id: i32,
+    pub right_id: i32,
+    pub fingerprint_algorithm_id: i32,
+    pub tanimoto_score: f64,
 }

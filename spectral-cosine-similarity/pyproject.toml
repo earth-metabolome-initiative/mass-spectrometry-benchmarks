@@ -2,16 +2,19 @@
 name = "spectral-cosine-similarity-scripts"
 version = "0.1.0"
 description = "Python scripts for matchms benchmarking"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
-    "matchms>=0.18",
+    "matchms>=0.28",
     "ms-entropy>=1.4.0,<2",
     "numpy",
     "tqdm",
+    "huggingface-hub",
+    "pandas",
+    "scikit-fingerprints",
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 88
 src = ["scripts"]
 
@@ -19,11 +22,11 @@ src = ["scripts"]
 select = ["E", "F", "I", "B", "UP", "W"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 strict = true
 files = ["scripts"]
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["matchms", "matchms.*", "ms_entropy", "tqdm"]
+module = ["matchms", "matchms.*", "ms_entropy", "tqdm", "huggingface_hub", "skfp", "skfp.*"]
 ignore_missing_imports = true

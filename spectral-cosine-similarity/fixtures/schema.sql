@@ -40,6 +40,29 @@ CREATE TABLE IF NOT EXISTS experiments (
     UNIQUE(params)
 ) STRICT;
 
+-- Molecules (linked to spectra via molecule_id FK)
+CREATE TABLE IF NOT EXISTS molecules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    smiles TEXT NOT NULL CHECK (length(trim(smiles)) > 0),
+    inchikey TEXT NOT NULL UNIQUE CHECK (length(trim(inchikey)) > 0)
+) STRICT;
+
+-- Fingerprint algorithm definitions (name + JSON params)
+CREATE TABLE IF NOT EXISTS fingerprint_algorithms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
+    params TEXT NOT NULL CHECK (length(trim(params)) > 0)
+                    CHECK (json_valid(params) = 1)
+) STRICT;
+
+-- Per-molecule fingerprint blobs, one per algorithm
+CREATE TABLE IF NOT EXISTS fingerprints (
+    molecule_id INTEGER NOT NULL REFERENCES molecules(id),
+    fingerprint_algorithm_id INTEGER NOT NULL REFERENCES fingerprint_algorithms(id),
+    fingerprint BLOB NOT NULL,
+    PRIMARY KEY (molecule_id, fingerprint_algorithm_id)
+) STRICT, WITHOUT ROWID;
+
 -- Spectra
 CREATE TABLE IF NOT EXISTS spectra (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +72,8 @@ CREATE TABLE IF NOT EXISTS spectra (
     spectrum_hash TEXT NOT NULL UNIQUE CHECK (length(trim(spectrum_hash)) > 0),
     precursor_mz REAL NOT NULL CHECK (precursor_mz > 0),
     num_peaks INTEGER NOT NULL CHECK (num_peaks > 0),
-    peaks TEXT NOT NULL CHECK (json_valid(peaks) = 1)
+    peaks TEXT NOT NULL CHECK (json_valid(peaks) = 1),
+    molecule_id INTEGER NOT NULL REFERENCES molecules(id)
 ) STRICT;
 
 -- Results: similarity score + timing, one row per (pair, experiment, implementation)
@@ -75,6 +99,16 @@ CREATE TABLE IF NOT EXISTS selected_pairs (
     right_id INTEGER NOT NULL REFERENCES spectra(id),
     CHECK (left_id <= right_id),
     PRIMARY KEY (left_id, right_id)
+) STRICT, WITHOUT ROWID;
+
+-- Tanimoto similarity between molecule fingerprints for selected pairs
+CREATE TABLE IF NOT EXISTS tanimoto_results (
+    left_id INTEGER NOT NULL REFERENCES spectra(id),
+    right_id INTEGER NOT NULL REFERENCES spectra(id),
+    fingerprint_algorithm_id INTEGER NOT NULL REFERENCES fingerprint_algorithms(id),
+    tanimoto_score REAL NOT NULL CHECK (tanimoto_score >= 0.0 AND tanimoto_score <= 1.0),
+    CHECK (left_id <= right_id),
+    PRIMARY KEY (left_id, right_id, fingerprint_algorithm_id)
 ) STRICT, WITHOUT ROWID;
 
 -- Canonical/reference topology derived from schema regularities.
