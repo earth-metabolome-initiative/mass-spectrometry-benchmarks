@@ -13,14 +13,21 @@ use diesel::sql_query;
 use diesel::sql_types::BigInt;
 use diesel::sqlite::SqliteConnection;
 
-use aggregate::{MetricKind, build_metric_chart_from_aggregates, omit_empty_buckets};
-use data::{load_rmse_aggregate_rows, load_timing_aggregate_rows, series_pairs_from_aggregates};
+use aggregate::{
+    CorrelationStats, MetricKind, build_correlation_chart, build_metric_chart_from_aggregates,
+    omit_empty_buckets,
+};
+use data::{
+    load_correlation_rows, load_rmse_aggregate_rows, load_timing_aggregate_rows,
+    series_pairs_from_aggregates,
+};
 use render::{FacetedLineChart, build_series_style_map_from_pairs, render_faceted_line_chart};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactNames {
     pub timing_svg: String,
     pub rmse_svg: String,
+    pub correlation_svg: String,
     pub markdown: String,
 }
 
@@ -29,6 +36,7 @@ impl Default for ArtifactNames {
         Self {
             timing_svg: "timing.svg".to_string(),
             rmse_svg: "rmse.svg".to_string(),
+            correlation_svg: "correlation.svg".to_string(),
             markdown: "tables.md".to_string(),
         }
     }
@@ -40,7 +48,6 @@ pub struct ReportConfig {
     pub artifact_names: ArtifactNames,
     pub include_comparison: bool,
     pub prune_empty_buckets: bool,
-    pub requested_max_spectra: usize,
 }
 
 impl Default for ReportConfig {
@@ -50,7 +57,6 @@ impl Default for ReportConfig {
             artifact_names: ArtifactNames::default(),
             include_comparison: true,
             prune_empty_buckets: true,
-            requested_max_spectra: 0,
         }
     }
 }
@@ -59,6 +65,7 @@ impl Default for ReportConfig {
 pub struct ReportArtifacts {
     pub timing_svg: Option<PathBuf>,
     pub rmse_svg: Option<PathBuf>,
+    pub correlation_svg: Option<PathBuf>,
     pub markdown: PathBuf,
 }
 
@@ -118,17 +125,12 @@ fn render_chart_artifact(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RunScopeMetadata {
-    requested_max_spectra: usize,
     total_spectra_in_db: i64,
     spectra_used_in_results: i64,
 }
 
 fn append_run_scope_markdown(markdown: &mut String, run_scope: &RunScopeMetadata) {
     markdown.push_str("## Run Scope\n\n");
-    markdown.push_str(&format!(
-        "- Requested max spectra: `{}`\n",
-        run_scope.requested_max_spectra
-    ));
     markdown.push_str(&format!(
         "- Total spectra in DB: `{}`\n",
         run_scope.total_spectra_in_db
@@ -191,16 +193,43 @@ fn append_chart_markdown(markdown: &mut String, chart: &FacetedLineChart) {
     }
 }
 
+fn append_correlation_table_markdown(markdown: &mut String, stats: &[CorrelationStats]) {
+    markdown.push_str("## Correlation: Spectral Similarity vs Structural Similarity\n\n");
+    if stats.is_empty() {
+        markdown.push_str("_No correlation data available._\n\n");
+        return;
+    }
+    markdown.push_str(
+        "| Fingerprint | Algorithm | Pearson r | Pearson p | Spearman rho | Spearman p | n_pairs |\n",
+    );
+    markdown.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+    for s in stats {
+        markdown.push_str(&format!(
+            "| {} | {} | {:.4} | {:.2e} | {:.4} | {:.2e} | {} |\n",
+            s.fingerprint_algorithm.replace('|', "\\|"),
+            s.series_label.replace('|', "\\|"),
+            s.pearson_r,
+            s.pearson_p,
+            s.spearman_rho,
+            s.spearman_p,
+            s.n_pairs,
+        ));
+    }
+    markdown.push('\n');
+}
+
 fn write_markdown_tables(
     output_path: &Path,
     charts: &[&FacetedLineChart],
     run_scope: &RunScopeMetadata,
+    correlation_stats: &[CorrelationStats],
 ) {
     let mut markdown = String::from("# Benchmark Tables\n\n");
     append_run_scope_markdown(&mut markdown, run_scope);
     for chart in charts {
         append_chart_markdown(&mut markdown, chart);
     }
+    append_correlation_table_markdown(&mut markdown, correlation_stats);
 
     fs::write(output_path, markdown).unwrap_or_else(|err| {
         panic!(
@@ -251,13 +280,35 @@ pub fn generate(conn: &mut SqliteConnection, cfg: &ReportConfig) -> ReportArtifa
     let rmse_path = cfg.output_dir.join(&cfg.artifact_names.rmse_svg);
     let rmse_svg = render_chart_artifact(&rmse_chart, &rmse_path, "[report] Rendering RMSE chart");
 
+    // Correlation chart
+    eprintln!("[report] Loading correlation data");
+    let correlation_rows = load_correlation_rows(conn);
+    let (mut correlation_chart, correlation_stats) =
+        build_correlation_chart(&correlation_rows, &style_map);
+    if cfg.prune_empty_buckets {
+        correlation_chart = omit_empty_buckets(correlation_chart);
+    }
+    let corr_scope = format!(" (Spectra used: {spectra_used})");
+    correlation_chart.title.push_str(&corr_scope);
+
+    let correlation_path = cfg.output_dir.join(&cfg.artifact_names.correlation_svg);
+    let correlation_svg = render_chart_artifact(
+        &correlation_chart,
+        &correlation_path,
+        "[report] Rendering correlation chart",
+    );
+
     let markdown_path = cfg.output_dir.join(&cfg.artifact_names.markdown);
     let run_scope = RunScopeMetadata {
-        requested_max_spectra: cfg.requested_max_spectra,
         total_spectra_in_db: total_spectra,
         spectra_used_in_results: spectra_used,
     };
-    write_markdown_tables(&markdown_path, &[&timing_chart, &rmse_chart], &run_scope);
+    write_markdown_tables(
+        &markdown_path,
+        &[&timing_chart, &rmse_chart, &correlation_chart],
+        &run_scope,
+        &correlation_stats,
+    );
     eprintln!("[report] Written {}", markdown_path.display());
 
     if cfg.include_comparison {
@@ -268,6 +319,7 @@ pub fn generate(conn: &mut SqliteConnection, cfg: &ReportConfig) -> ReportArtifa
     ReportArtifacts {
         timing_svg,
         rmse_svg,
+        correlation_svg,
         markdown: markdown_path,
     }
 }
@@ -387,12 +439,12 @@ mod tests {
         let markdown = fs::read_to_string(&markdown_path).expect("failed to read markdown report");
         assert!(markdown.contains("# Benchmark Tables"));
         assert!(markdown.contains("## Run Scope"));
-        assert!(markdown.contains("Requested max spectra: `0`"));
         assert!(markdown.contains("Total spectra in DB: `0`"));
         assert!(markdown.contains("Spectra used in results: `0`"));
         assert!(markdown.contains("## Timing by Peak Count"));
         assert!(markdown.contains("## RMSE vs Reference by Peak Count"));
         assert!(markdown.contains("Spectra used: 0"));
         assert!(markdown.contains("_No data available._"));
+        assert!(markdown.contains("## Correlation"));
     }
 }

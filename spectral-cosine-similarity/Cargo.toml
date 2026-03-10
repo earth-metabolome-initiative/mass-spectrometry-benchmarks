@@ -8,17 +8,16 @@ default = []
 python-tests = []
 
 [dependencies]
-mass_spectrometry = { git = "https://github.com/earth-metabolome-initiative/mass-spectrometry-traits" }
+mass_spectrometry = { path = "../../mass-spectrometry-traits" }
 diesel = { version = "2", features = ["sqlite", "returning_clauses_for_sqlite_3_35"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["blocking"] }
 clap = { version = "4", features = ["derive"] }
 plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series"] }
 rand = { version = "0.9", features = ["small_rng"] }
 indicatif = "0.17"
-sha2 = "0.10"
-md-5 = "0.10"
+statrs = "0.18"
+
 
 [dev-dependencies]
 tempfile = "3"

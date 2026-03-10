@@ -196,6 +196,43 @@ pub(crate) fn load_rmse_aggregate_rows(conn: &mut SqliteConnection) -> Vec<Aggre
         .collect()
 }
 
+// --- Correlation data loading ---
+
+#[derive(Debug, QueryableByName)]
+pub(crate) struct CorrelationRow {
+    #[diesel(sql_type = Text)]
+    pub(crate) fingerprint_algorithm: String,
+    #[diesel(sql_type = Text)]
+    pub(crate) series_label: String,
+    #[diesel(sql_type = Text)]
+    pub(crate) library_name: String,
+    #[diesel(sql_type = Double)]
+    pub(crate) spectral_score: f64,
+    #[diesel(sql_type = Double)]
+    pub(crate) tanimoto_score: f64,
+}
+
+pub(crate) fn load_correlation_rows(conn: &mut SqliteConnection) -> Vec<CorrelationRow> {
+    let query = "SELECT fa.name AS fingerprint_algorithm,
+                        vt.algorithm_name || ' (' || vt.library_name || ')' AS series_label,
+                        vt.library_name AS library_name,
+                        CAST(r.score AS REAL) AS spectral_score,
+                        t.tanimoto_score AS tanimoto_score
+                 FROM results r
+                 JOIN v_implementation_topology vt
+                   ON vt.implementation_id = r.implementation_id
+                 JOIN tanimoto_results t
+                   ON t.left_id = r.left_id AND t.right_id = r.right_id
+                 JOIN fingerprint_algorithms fa
+                   ON fa.id = t.fingerprint_algorithm_id
+                 WHERE vt.canonical_reference_implementation_id IS NOT NULL
+                 ORDER BY fa.name, series_label";
+
+    sql_query(query)
+        .load(conn)
+        .expect("failed to load correlation rows")
+}
+
 pub(crate) fn series_pairs_from_aggregates(
     rows: &[AggregatedSeriesPoint],
 ) -> Vec<(String, String)> {

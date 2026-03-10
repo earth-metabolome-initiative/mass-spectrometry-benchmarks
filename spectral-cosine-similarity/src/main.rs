@@ -1,13 +1,9 @@
 use clap::Parser;
-use spectral_cosine_similarity::{compute, db, download, prepare, report};
+use spectral_cosine_similarity::{compute, db, fingerprint, prepare, report};
 
 #[derive(Parser)]
 #[command(about = "Spectral cosine similarity benchmark pipeline")]
 struct Cli {
-    /// Maximum number of spectra to load
-    #[arg(long)]
-    max_spectra: usize,
-
     /// Number of random pairs to sample
     #[arg(long)]
     num_pairs: usize,
@@ -15,21 +11,15 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    run_pipeline(cli.max_spectra, cli.num_pairs);
+    run_pipeline(cli.num_pairs);
 }
 
-fn run_pipeline(max_spectra: usize, num_pairs: usize) {
+fn run_pipeline(num_pairs: usize) {
     compute::preflight_python_environment();
     let conn = &mut db::establish_connection();
     db::initialize(conn);
-    download::run();
-    prepare::run(conn, max_spectra);
-    compute::run(conn, max_spectra, num_pairs);
-    report::generate(
-        conn,
-        &report::ReportConfig {
-            requested_max_spectra: max_spectra,
-            ..Default::default()
-        },
-    );
+    prepare::run(conn);
+    compute::run(conn, num_pairs);
+    fingerprint::run(conn);
+    report::generate(conn, &report::ReportConfig::default());
 }
