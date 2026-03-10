@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use diesel::prelude::*;
+use diesel::sql_query;
 use diesel::sqlite::SqliteConnection;
 use indicatif::{ProgressBar, ProgressStyle};
 use mass_spectrometry::prelude::*;
@@ -12,7 +13,7 @@ use crate::db;
 use crate::models::*;
 use crate::pair_selection;
 
-const FLUSH_BATCH: usize = 500;
+const FLUSH_BATCH: usize = 10_000;
 const GLOBAL_WARMUP_PAIR_SAMPLE: usize = 100;
 const RUST_LIBRARY_NAME: &str = "mass-spectrometry-traits";
 
@@ -26,13 +27,13 @@ enum Preprocessing {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AlgoKind {
     HungarianCosine,
-    GreedyCosine,
     LinearCosine,
     ModifiedCosine,
-    ModifiedGreedyCosine,
     ModifiedLinearCosine,
     EntropyWeighted,
     EntropyUnweighted,
+    ModifiedEntropyWeighted,
+    ModifiedEntropyUnweighted,
 }
 
 #[cfg(test)]
@@ -48,7 +49,6 @@ const RUST_ALGO_SPECS: [(&str, Preprocessing, AlgoKind); 10] = [
         Preprocessing::None,
         AlgoKind::HungarianCosine,
     ),
-    ("CosineGreedy", Preprocessing::None, AlgoKind::GreedyCosine),
     (
         "LinearCosine",
         Preprocessing::SiriusMerge,
@@ -58,11 +58,6 @@ const RUST_ALGO_SPECS: [(&str, Preprocessing, AlgoKind); 10] = [
         "ModifiedCosine",
         Preprocessing::None,
         AlgoKind::ModifiedCosine,
-    ),
-    (
-        "ModifiedGreedyCosine",
-        Preprocessing::None,
-        AlgoKind::ModifiedGreedyCosine,
     ),
     (
         "ModifiedLinearCosine",
@@ -89,10 +84,20 @@ const RUST_ALGO_SPECS: [(&str, Preprocessing, AlgoKind); 10] = [
         Preprocessing::MsEntropyClean,
         AlgoKind::EntropyUnweighted,
     ),
+    (
+        "ModifiedLinearEntropyWeighted",
+        Preprocessing::MsEntropyClean,
+        AlgoKind::ModifiedEntropyWeighted,
+    ),
+    (
+        "ModifiedLinearEntropyUnweighted",
+        Preprocessing::MsEntropyClean,
+        AlgoKind::ModifiedEntropyUnweighted,
+    ),
 ];
 
 #[cfg(test)]
-const PYTHON_ALGO_SPECS: [PythonAlgoSpec; 5] = [
+const PYTHON_ALGO_SPECS: [PythonAlgoSpec; 6] = [
     PythonAlgoSpec {
         algorithm_name: "CosineHungarian",
         library_name: "matchms",
@@ -103,6 +108,10 @@ const PYTHON_ALGO_SPECS: [PythonAlgoSpec; 5] = [
     },
     PythonAlgoSpec {
         algorithm_name: "ModifiedGreedyCosine",
+        library_name: "matchms",
+    },
+    PythonAlgoSpec {
+        algorithm_name: "ModifiedCosineHungarian",
         library_name: "matchms",
     },
     PythonAlgoSpec {
@@ -119,7 +128,7 @@ fn algorithm_cli_label(algorithm_name: &str, library_name: &str) -> String {
     format!("{algorithm_name} ({library_name})")
 }
 
-type SpectraMap = HashMap<i32, GenericSpectrum<f64, f64>>;
+type SpectraMap = HashMap<i32, GenericSpectrum>;
 
 pub fn preflight_python_environment() {
     let uv_check = Command::new("uv")
@@ -147,15 +156,20 @@ pub fn preflight_python_environment() {
     }
 
     let import_check = Command::new("uv")
-        .args(["run", "python3", "-c", "import matchms, ms_entropy"])
+        .args([
+            "run",
+            "python3",
+            "-c",
+            "import matchms, ms_entropy, huggingface_hub, skfp",
+        ])
         .status();
     match import_check {
         Ok(status) if status.success() => {}
         Ok(status) => {
             panic!(
                 "[preflight] Python dependency check failed with {status}. \
-                 Run `uv sync` in spectral-cosine-similarity/ and ensure both \
-                 `matchms` and `ms_entropy` import successfully."
+                 Run `uv sync` in spectral-cosine-similarity/ and ensure \
+                 `matchms`, `ms_entropy`, `huggingface_hub`, and `skfp` import successfully."
             );
         }
         Err(err) => {
@@ -165,20 +179,21 @@ pub fn preflight_python_environment() {
 }
 
 /// Compute similarities and timings for all implementations (production entry point).
-pub fn run(conn: &mut SqliteConnection, max_spectra: usize, num_pairs: usize) {
-    run_with_python_runner(conn, max_spectra, num_pairs, run_python_default);
+pub fn run(conn: &mut SqliteConnection, num_pairs: usize) {
+    run_with_python_runner(conn, num_pairs, run_python_default);
 }
 
 /// Compute similarities with an injectable Python runner (for tests).
-pub fn run_with_python_runner<F>(
-    conn: &mut SqliteConnection,
-    max_spectra: usize,
-    num_pairs: usize,
-    run_python: F,
-) where
+pub fn run_with_python_runner<F>(conn: &mut SqliteConnection, num_pairs: usize, run_python: F)
+where
     F: Fn(),
 {
-    let (experiments, spectra_map, id_pairs) = load_compute_context(conn, max_spectra, num_pairs);
+    let (experiments, spectra_map, id_pairs) = load_compute_context(conn, num_pairs);
+
+    sql_query("DROP INDEX IF EXISTS idx_results_impl_pair_exp")
+        .execute(conn)
+        .expect("failed to drop results index before compute");
+
     run_rust_compute_passes(conn, &experiments, &spectra_map, &id_pairs);
 
     let python_impl_count = python_implementation_ids(conn).len() as u64;
@@ -187,6 +202,13 @@ pub fn run_with_python_runner<F>(
         run_python();
         eprintln!("[compute] Python: complete");
     }
+
+    sql_query(
+        "CREATE INDEX IF NOT EXISTS idx_results_impl_pair_exp \
+         ON results(implementation_id, left_id, right_id, experiment_id)",
+    )
+    .execute(conn)
+    .expect("failed to recreate results index after compute");
 }
 
 fn run_python_default() {
@@ -215,26 +237,46 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
     if batch.is_empty() {
         return;
     }
-    for chunk in batch.chunks(FLUSH_BATCH) {
-        diesel::insert_into(crate::schema::results::table)
-            .values(chunk)
-            .execute(conn)
-            .expect("failed to insert results");
-    }
+    let total = batch.len() as u64;
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::with_template("[compute] DB flush: {bar:40} {pos}/{len} ({eta})")
+            .expect("invalid progress bar template"),
+    );
+
+    batch.sort_unstable_by(|a, b| {
+        (a.left_id, a.right_id, a.experiment_id, a.implementation_id).cmp(&(
+            b.left_id,
+            b.right_id,
+            b.experiment_id,
+            b.implementation_id,
+        ))
+    });
+
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        for chunk in batch.chunks(FLUSH_BATCH) {
+            diesel::insert_into(crate::schema::results::table)
+                .values(chunk)
+                .execute(conn)
+                .expect("failed to insert results");
+            pb.inc(chunk.len() as u64);
+        }
+        Ok(())
+    })
+    .expect("failed to flush results transaction");
+
+    pb.finish_and_clear();
     batch.clear();
 }
 
 fn load_compute_context(
     conn: &mut SqliteConnection,
-    max_spectra: usize,
     num_pairs: usize,
 ) -> (Vec<Experiment>, SpectraMap, Vec<(i32, i32)>) {
     let experiments = db::load_experiments(conn);
 
-    let limit = i64::try_from(max_spectra).unwrap_or(i64::MAX);
     let all_spectra: Vec<SpectrumRow> = crate::schema::spectra::table
         .order(crate::schema::spectra::id.asc())
-        .limit(limit)
         .load(conn)
         .expect("failed to load spectra");
 
@@ -250,40 +292,52 @@ fn load_compute_context(
     eprintln!("[compute] {} pairs ready", id_pairs.len());
 
     // Write selected pairs to DB so Python reads the same set.
-    diesel::delete(crate::schema::selected_pairs::table)
-        .execute(conn)
-        .expect("failed to clear selected_pairs");
-    for chunk in id_pairs.chunks(FLUSH_BATCH) {
-        let new_pairs: Vec<NewSelectedPair> = chunk
-            .iter()
-            .map(|&(l, r)| NewSelectedPair {
-                left_id: l,
-                right_id: r,
-            })
-            .collect();
-        diesel::insert_into(crate::schema::selected_pairs::table)
-            .values(&new_pairs)
+    let pb = ProgressBar::new(id_pairs.len() as u64);
+    pb.set_style(
+        ProgressStyle::with_template("[compute] Saving pairs: {bar:40} {pos}/{len} ({eta})")
+            .expect("invalid progress bar template"),
+    );
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        diesel::delete(crate::schema::selected_pairs::table)
             .execute(conn)
-            .expect("failed to insert selected_pairs");
-    }
+            .expect("failed to clear selected_pairs");
+        for chunk in id_pairs.chunks(FLUSH_BATCH) {
+            let new_pairs: Vec<NewSelectedPair> = chunk
+                .iter()
+                .map(|&(l, r)| NewSelectedPair {
+                    left_id: l,
+                    right_id: r,
+                })
+                .collect();
+            diesel::insert_into(crate::schema::selected_pairs::table)
+                .values(&new_pairs)
+                .execute(conn)
+                .expect("failed to insert selected_pairs");
+            pb.inc(chunk.len() as u64);
+        }
+        Ok(())
+    })
+    .expect("failed to write selected_pairs");
+    pb.finish_and_clear();
 
     (experiments, spectra_map, id_pairs)
 }
 
-fn compute_rust_algorithm<B, S>(
+fn compute_rust_algorithm<B, SIM, SP, Score>(
     conn: &mut SqliteConnection,
     experiments: &[Experiment],
-    spectra_map: &SpectraMap,
+    spectra_map: &HashMap<i32, SP>,
     id_pairs: &[(i32, i32)],
     algorithm_name: &str,
     build_similarity: B,
 ) -> usize
 where
-    B: Fn(&ExperimentParams) -> S,
-    S: ScalarSimilarity<
-            GenericSpectrum<f64, f64>,
-            GenericSpectrum<f64, f64>,
-            Similarity = std::result::Result<(f64, usize), SimilarityComputationError>,
+    Score: Into<f64> + Copy + Default,
+    B: Fn(&ExperimentParams) -> SIM,
+    SIM: ScalarSimilarity<
+            SP,
+            SP,
+            Similarity = std::result::Result<(Score, usize), SimilarityComputationError>,
         >,
 {
     let impl_id = db::get_implementation_id(conn, algorithm_name, RUST_LIBRARY_NAME);
@@ -336,7 +390,7 @@ where
                 .expect("right spectrum not found");
 
             let mut times_ns: Vec<u128> = Vec::with_capacity(params.n_reps as usize);
-            let mut last_result = (0.0f64, 0usize);
+            let mut last_result = (Score::default(), 0usize);
             for _ in 0..params.n_reps {
                 let t0 = Instant::now();
                 last_result = black_box(similarity.similarity(black_box(left), black_box(right)))
@@ -350,7 +404,8 @@ where
                 times_ns.push(t0.elapsed().as_nanos());
             }
 
-            let (score, matches) = last_result;
+            let (score_raw, matches) = last_result;
+            let score: f64 = score_raw.into();
             let matches = i32::try_from(matches).unwrap_or_else(|_| {
                 panic!(
                     "[compute] {algorithm_label} matches={matches} does not fit i32 \
@@ -401,17 +456,6 @@ fn run_algo(
                     .expect("failed to build HungarianCosine")
             },
         ),
-        AlgoKind::GreedyCosine => compute_rust_algorithm(
-            conn,
-            experiments,
-            spectra_map,
-            id_pairs,
-            algorithm_name,
-            |p| {
-                GreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance)
-                    .expect("failed to build GreedyCosine")
-            },
-        ),
         AlgoKind::LinearCosine => compute_rust_algorithm(
             conn,
             experiments,
@@ -432,17 +476,6 @@ fn run_algo(
             |p| {
                 ModifiedHungarianCosine::new(p.mz_power, p.intensity_power, p.tolerance)
                     .expect("failed to build ModifiedHungarianCosine")
-            },
-        ),
-        AlgoKind::ModifiedGreedyCosine => compute_rust_algorithm(
-            conn,
-            experiments,
-            spectra_map,
-            id_pairs,
-            algorithm_name,
-            |p| {
-                ModifiedGreedyCosine::new(p.mz_power, p.intensity_power, p.tolerance)
-                    .expect("failed to build ModifiedGreedyCosine")
             },
         ),
         AlgoKind::ModifiedLinearCosine => compute_rust_algorithm(
@@ -478,6 +511,28 @@ fn run_algo(
                     .expect("failed to build LinearEntropy unweighted")
             },
         ),
+        AlgoKind::ModifiedEntropyWeighted => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                ModifiedLinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, true)
+                    .expect("failed to build ModifiedLinearEntropy weighted")
+            },
+        ),
+        AlgoKind::ModifiedEntropyUnweighted => compute_rust_algorithm(
+            conn,
+            experiments,
+            spectra_map,
+            id_pairs,
+            algorithm_name,
+            |p| {
+                ModifiedLinearEntropy::new(p.mz_power, p.intensity_power, p.tolerance, false)
+                    .expect("failed to build ModifiedLinearEntropy unweighted")
+            },
+        ),
     }
 }
 
@@ -497,7 +552,7 @@ fn build_sirius_merged_map(experiments: &[Experiment], base_map: &SpectraMap) ->
 }
 
 fn build_entropy_cleaned_map(base_map: &SpectraMap) -> SpectraMap {
-    let cleaner = MsEntropyCleanSpectrum::<f64>::builder()
+    let cleaner = MsEntropyCleanSpectrum::builder()
         .build()
         .expect("failed to build MsEntropyCleanSpectrum with default parameters");
 
@@ -576,7 +631,10 @@ mod tests {
         let matchms_modified_greedy =
             db::get_implementation_id(&mut conn, "ModifiedGreedyCosine", "matchms");
         assert!(python_impls.contains(&matchms_modified_greedy));
-        assert_eq!(python_impls.len(), 5);
+        let matchms_modified_hungarian =
+            db::get_implementation_id(&mut conn, "ModifiedCosineHungarian", "matchms");
+        assert!(python_impls.contains(&matchms_modified_hungarian));
+        assert_eq!(python_impls.len(), 6);
     }
 
     #[test]

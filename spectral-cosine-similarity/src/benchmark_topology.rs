@@ -62,18 +62,14 @@ mod tests {
 
         let cosine_greedy = rows
             .iter()
-            .find(|row| {
-                row.algorithm_name == "CosineGreedy"
-                    && row.library_name == "mass-spectrometry-traits"
-            })
+            .find(|row| row.algorithm_name == "CosineGreedy" && row.library_name == "matchms")
             .expect("missing CosineGreedy implementation row");
         assert_eq!(cosine_greedy.canonical_algorithm_name, "CosineHungarian");
 
         let modified_greedy = rows
             .iter()
             .find(|row| {
-                row.algorithm_name == "ModifiedGreedyCosine"
-                    && row.library_name == "mass-spectrometry-traits"
+                row.algorithm_name == "ModifiedGreedyCosine" && row.library_name == "matchms"
             })
             .expect("missing ModifiedGreedyCosine implementation row");
         assert_eq!(modified_greedy.canonical_algorithm_name, "ModifiedCosine");

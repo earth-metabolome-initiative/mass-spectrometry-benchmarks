@@ -103,6 +103,11 @@ pub fn initialize(conn: &mut SqliteConnection) {
             Some("ModifiedCosine"),
         ),
         (
+            "ModifiedCosineHungarian",
+            "Hungarian precursor-shift-aware modified cosine similarity",
+            Some("ModifiedCosine"),
+        ),
+        (
             "ModifiedLinearCosine",
             "Linear-time modified cosine similarity for well-separated spectra",
             Some("ModifiedCosineMerged"),
@@ -125,6 +130,16 @@ pub fn initialize(conn: &mut SqliteConnection) {
         (
             "EntropySimilarityUnweighted",
             "Unweighted spectral entropy similarity",
+            None,
+        ),
+        (
+            "ModifiedLinearEntropyWeighted",
+            "Weighted modified linear entropy similarity",
+            None,
+        ),
+        (
+            "ModifiedLinearEntropyUnweighted",
+            "Unweighted modified linear entropy similarity",
             None,
         ),
     ];
@@ -171,19 +186,20 @@ pub fn initialize(conn: &mut SqliteConnection) {
     let impl_seeds: &[(&str, i32, bool)] = &[
         ("CosineHungarian", rust_lib_id, false),
         ("CosineHungarian", matchms_lib_id, true),
-        ("CosineGreedy", rust_lib_id, false),
         ("CosineGreedy", matchms_lib_id, true),
         ("ModifiedCosine", rust_lib_id, true),
-        ("ModifiedGreedyCosine", rust_lib_id, false),
         ("ModifiedGreedyCosine", matchms_lib_id, false),
-        ("EntropySimilarityWeighted", rust_lib_id, false),
-        ("EntropySimilarityWeighted", ms_entropy_lib_id, true),
-        ("EntropySimilarityUnweighted", rust_lib_id, false),
-        ("EntropySimilarityUnweighted", ms_entropy_lib_id, true),
+        ("ModifiedCosineHungarian", matchms_lib_id, false),
+        ("EntropySimilarityWeighted", rust_lib_id, true),
+        ("EntropySimilarityWeighted", ms_entropy_lib_id, false),
+        ("EntropySimilarityUnweighted", rust_lib_id, true),
+        ("EntropySimilarityUnweighted", ms_entropy_lib_id, false),
         ("LinearCosine", rust_lib_id, false),
         ("ModifiedLinearCosine", rust_lib_id, false),
         ("CosineHungarianMerged", rust_lib_id, true),
         ("ModifiedCosineMerged", rust_lib_id, true),
+        ("ModifiedLinearEntropyWeighted", rust_lib_id, true),
+        ("ModifiedLinearEntropyUnweighted", rust_lib_id, true),
     ];
     for &(algo_name, lib_id, is_ref) in impl_seeds {
         ensure_implementation(conn, algo_ids[algo_name], lib_id, is_ref);
@@ -456,8 +472,8 @@ source = "git+https://example.com/repo#abc123def"
             .first::<i64>(&mut conn)
             .expect("failed to count experiments");
 
-        assert_eq!(algorithm_count, 10);
-        assert_eq!(implementation_count, 15);
+        assert_eq!(algorithm_count, 13);
+        assert_eq!(implementation_count, 16);
         assert_eq!(experiment_count, 1);
     }
 
@@ -471,7 +487,7 @@ source = "git+https://example.com/repo#abc123def"
             .load(&mut conn)
             .expect("failed to load implementation ids");
 
-        assert_eq!(all_ids.len(), 15);
+        assert_eq!(all_ids.len(), 16);
         let unique: std::collections::HashSet<i32> = all_ids.iter().copied().collect();
         assert_eq!(
             unique.len(),
@@ -511,7 +527,7 @@ source = "git+https://example.com/repo#abc123def"
             }
         }
 
-        assert_eq!(refs_by_algorithm.len(), 10);
+        assert_eq!(refs_by_algorithm.len(), 13);
         assert!(
             refs_by_algorithm.values().all(|&n| n <= 1),
             "expected at most one reference implementation per algorithm, got {refs_by_algorithm:?}"
@@ -532,18 +548,18 @@ source = "git+https://example.com/repo#abc123def"
             );
         }
 
-        let modified_greedy_cosine_id = algorithms::table
-            .filter(algorithms::name.eq("ModifiedGreedyCosine"))
-            .select(algorithms::id)
-            .first::<i32>(&mut conn)
-            .expect("failed to load ModifiedGreedyCosine id");
-        assert_eq!(
-            refs_by_algorithm
-                .get(&modified_greedy_cosine_id)
-                .copied()
-                .unwrap_or(0),
-            0
-        );
+        for approx_name in ["ModifiedGreedyCosine", "ModifiedCosineHungarian"] {
+            let approx_id = algorithms::table
+                .filter(algorithms::name.eq(approx_name))
+                .select(algorithms::id)
+                .first::<i32>(&mut conn)
+                .unwrap_or_else(|_| panic!("failed to load {approx_name} id"));
+            assert_eq!(
+                refs_by_algorithm.get(&approx_id).copied().unwrap_or(0),
+                0,
+                "{approx_name} should have no reference implementation"
+            );
+        }
     }
 
     #[test]
@@ -558,10 +574,13 @@ source = "git+https://example.com/repo#abc123def"
             ("CosineHungarianMerged", None),
             ("ModifiedCosine", None),
             ("ModifiedGreedyCosine", Some("ModifiedCosine")),
+            ("ModifiedCosineHungarian", Some("ModifiedCosine")),
             ("ModifiedLinearCosine", Some("ModifiedCosineMerged")),
             ("ModifiedCosineMerged", None),
             ("EntropySimilarityWeighted", None),
             ("EntropySimilarityUnweighted", None),
+            ("ModifiedLinearEntropyWeighted", None),
+            ("ModifiedLinearEntropyUnweighted", None),
         ];
 
         for &(algo_name, expected_approx) in expected {

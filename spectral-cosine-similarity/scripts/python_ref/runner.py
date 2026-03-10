@@ -62,53 +62,55 @@ def run_algorithm(
 
     algo_label = f"{algorithm_name} ({library_name})"
 
-    for experiment in tqdm(experiments, desc=algo_label, unit="exp"):
-        params = experiment.params
-        n_warmup = int(params["n_warmup"])
-        n_reps = int(params["n_reps"])
+    with tqdm(total=total_work, desc=algo_label, unit="pair") as bar:
+        for experiment in experiments:
+            params = experiment.params
+            n_warmup = int(params["n_warmup"])
+            n_reps = int(params["n_reps"])
 
-        # Warmup once per (implementation, experiment) using a representative subset.
-        warmup_pairs = id_pairs[:GLOBAL_WARMUP_PAIR_SAMPLE]
-        for _ in range(n_warmup):
-            for left_id, right_id in warmup_pairs:
+            # Warmup once per (implementation, experiment) using a representative subset.
+            warmup_pairs = id_pairs[:GLOBAL_WARMUP_PAIR_SAMPLE]
+            for _ in range(n_warmup):
+                for left_id, right_id in warmup_pairs:
+                    left_spec = spectra[left_id]
+                    right_spec = spectra[right_id]
+                    compute_once(left_spec, right_spec, params)
+
+            for left_id, right_id in id_pairs:
                 left_spec = spectra[left_id]
                 right_spec = spectra[right_id]
-                compute_once(left_spec, right_spec, params)
 
-        for left_id, right_id in tqdm(id_pairs, desc="pairs", leave=False, unit="pair"):
-            left_spec = spectra[left_id]
-            right_spec = spectra[right_id]
+                times: list[int] = []
+                score = 0.0
+                matches = 0
+                for _ in range(n_reps):
+                    t0 = time.perf_counter_ns()
+                    raw_score, raw_matches = compute_once(left_spec, right_spec, params)
+                    score = _validate_score(
+                        raw_score,
+                        algorithm_label=algo_label,
+                        left_id=left_id,
+                        right_id=right_id,
+                        experiment_id=experiment.id,
+                    )
+                    matches = _validate_matches(raw_matches)
+                    t1 = time.perf_counter_ns()
+                    times.append(t1 - t0)
 
-            times: list[int] = []
-            score = 0.0
-            matches = 0
-            for _ in range(n_reps):
-                t0 = time.perf_counter_ns()
-                raw_score, raw_matches = compute_once(left_spec, right_spec, params)
-                score = _validate_score(
-                    raw_score,
-                    algorithm_label=algo_label,
+                median_ns = sorted(times)[n_reps // 2]
+                median_us = median_ns / 1000.0
+
+                db_io.insert_result(
+                    cur=cur,
                     left_id=left_id,
                     right_id=right_id,
                     experiment_id=experiment.id,
+                    implementation_id=implementation_id,
+                    score=score,
+                    matches=matches,
+                    median_time_us=median_us,
                 )
-                matches = _validate_matches(raw_matches)
-                t1 = time.perf_counter_ns()
-                times.append(t1 - t0)
-
-            median_ns = sorted(times)[n_reps // 2]
-            median_us = median_ns / 1000.0
-
-            db_io.insert_result(
-                cur=cur,
-                left_id=left_id,
-                right_id=right_id,
-                experiment_id=experiment.id,
-                implementation_id=implementation_id,
-                score=score,
-                matches=matches,
-                median_time_us=median_us,
-            )
+                bar.update(1)
 
     conn.commit()
     return total_work

@@ -7,7 +7,12 @@ from typing import Any, TypedDict, cast
 
 import ms_entropy
 import numpy as np
-from matchms.similarity import CosineGreedy, CosineHungarian, ModifiedCosine
+from matchms.similarity import (
+    CosineGreedy,
+    CosineHungarian,
+    ModifiedCosineGreedy,
+    ModifiedCosineHungarian,
+)
 from numpy.typing import NDArray
 
 from python_ref.types import ComputeFn, SpectrumData
@@ -48,7 +53,13 @@ def cosine_greedy(
 def modified_greedy_cosine(
     left: SpectrumData, right: SpectrumData, params: dict[str, Any]
 ) -> tuple[float, int]:
-    return _matchms_compute(ModifiedCosine, left, right, params)
+    return _matchms_compute(ModifiedCosineGreedy, left, right, params)
+
+
+def modified_cosine_hungarian(
+    left: SpectrumData, right: SpectrumData, params: dict[str, Any]
+) -> tuple[float, int]:
+    return _matchms_compute(ModifiedCosineHungarian, left, right, params)
 
 
 def _clean_peaks(data: SpectrumData) -> NDArray[np.float32]:
@@ -92,6 +103,7 @@ ALGORITHMS: list[tuple[str, str, ComputeFn]] = [
     ("CosineHungarian", "matchms", cosine_hungarian),
     ("CosineGreedy", "matchms", cosine_greedy),
     ("ModifiedGreedyCosine", "matchms", modified_greedy_cosine),
+    ("ModifiedCosineHungarian", "matchms", modified_cosine_hungarian),
     ("EntropySimilarityWeighted", "ms_entropy", entropy_weighted),
     ("EntropySimilarityUnweighted", "ms_entropy", entropy_unweighted),
 ]

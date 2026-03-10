@@ -31,7 +31,7 @@ impl FromSql<Text, Sqlite> for Peaks {
 }
 
 impl Peaks {
-    pub fn to_generic_spectrum(&self, precursor_mz: f64) -> GenericSpectrum<f64, f64> {
+    pub fn to_generic_spectrum(&self, precursor_mz: f64) -> GenericSpectrum {
         let mut sorted = self.0.clone();
         sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         // Merge duplicate m/z values by summing their intensities
@@ -44,7 +44,7 @@ impl Peaks {
             }
         });
 
-        let mut spectrum = GenericSpectrum::<f64, f64>::with_capacity(precursor_mz, sorted.len())
+        let mut spectrum = GenericSpectrum::with_capacity(precursor_mz, sorted.len())
             .expect("failed to create GenericSpectrum with reserved peak capacity");
         for &(mz, intensity) in &sorted {
             spectrum
