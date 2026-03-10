@@ -62,6 +62,26 @@ def run_algorithm(
 
     algo_label = f"{algorithm_name} ({library_name})"
 
+    # Per-implementation skip check.
+    cur.execute(
+        "SELECT COUNT(*) FROM results WHERE implementation_id = ?",
+        (implementation_id,),
+    )
+    existing = cur.fetchone()[0]
+    if existing == total_work:
+        print(f"[python_ref] {algo_label}: {existing} results cached, skipping")
+        return 0
+    if existing > 0:
+        print(
+            f"[python_ref] {algo_label}: partial results ({existing}/{total_work}), "
+            "clearing and recomputing"
+        )
+        cur.execute(
+            "DELETE FROM results WHERE implementation_id = ?",
+            (implementation_id,),
+        )
+        conn.commit()
+
     with tqdm(total=total_work, desc=algo_label, unit="pair") as bar:
         for experiment in experiments:
             params = experiment.params

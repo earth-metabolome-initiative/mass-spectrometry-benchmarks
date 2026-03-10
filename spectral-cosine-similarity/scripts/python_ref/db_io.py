@@ -99,7 +99,7 @@ def insert_result(
 ) -> None:
     cur.execute(
         """
-        INSERT INTO results
+        INSERT OR IGNORE INTO results
             (
                 left_id,
                 right_id,

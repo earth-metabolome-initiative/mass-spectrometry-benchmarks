@@ -269,29 +269,42 @@ fn flush_results(conn: &mut SqliteConnection, batch: &mut Vec<NewResult>) {
     batch.clear();
 }
 
-fn load_compute_context(
-    conn: &mut SqliteConnection,
-    num_pairs: usize,
-) -> (Vec<Experiment>, SpectraMap, Vec<(i32, i32)>) {
-    let experiments = db::load_experiments(conn);
-
-    let all_spectra: Vec<SpectrumRow> = crate::schema::spectra::table
-        .order(crate::schema::spectra::id.asc())
+fn sync_selected_pairs(conn: &mut SqliteConnection, id_pairs: &[(i32, i32)]) {
+    let existing: Vec<(i32, i32)> = crate::schema::selected_pairs::table
+        .select((
+            crate::schema::selected_pairs::left_id,
+            crate::schema::selected_pairs::right_id,
+        ))
+        .order((
+            crate::schema::selected_pairs::left_id,
+            crate::schema::selected_pairs::right_id,
+        ))
         .load(conn)
-        .expect("failed to load spectra");
+        .expect("failed to load existing selected_pairs");
 
-    let spectrum_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
-    let spectra_map: SpectraMap = all_spectra
-        .iter()
-        .map(|s| (s.id, s.to_generic_spectrum()))
-        .collect();
+    let mut sorted_new = id_pairs.to_vec();
+    sorted_new.sort_unstable();
 
-    eprintln!("[compute] Sampling {num_pairs} pairs");
-    let id_pairs = pair_selection::sample_pairs(&spectrum_ids, num_pairs);
+    if existing == sorted_new {
+        eprintln!(
+            "[compute] {} pairs unchanged, keeping cached data",
+            existing.len()
+        );
+        return;
+    }
 
-    eprintln!("[compute] {} pairs ready", id_pairs.len());
+    // Pairs changed — clear downstream tables that are keyed on pairs.
+    if !existing.is_empty() {
+        eprintln!("[compute] Pairs changed, clearing results and tanimoto data");
+        diesel::delete(crate::schema::results::table)
+            .execute(conn)
+            .expect("failed to clear results");
+        diesel::delete(crate::schema::tanimoto_results::table)
+            .execute(conn)
+            .expect("failed to clear tanimoto_results");
+    }
 
-    // Write selected pairs to DB so Python reads the same set.
+    // Delete + re-insert selected_pairs.
     let pb = ProgressBar::new(id_pairs.len() as u64);
     pb.set_style(
         ProgressStyle::with_template("[compute] Saving pairs: {bar:40} {pos}/{len} ({eta})")
@@ -319,6 +332,31 @@ fn load_compute_context(
     })
     .expect("failed to write selected_pairs");
     pb.finish_and_clear();
+}
+
+fn load_compute_context(
+    conn: &mut SqliteConnection,
+    num_pairs: usize,
+) -> (Vec<Experiment>, SpectraMap, Vec<(i32, i32)>) {
+    let experiments = db::load_experiments(conn);
+
+    let all_spectra: Vec<SpectrumRow> = crate::schema::spectra::table
+        .order(crate::schema::spectra::id.asc())
+        .load(conn)
+        .expect("failed to load spectra");
+
+    let spectrum_ids: Vec<i32> = all_spectra.iter().map(|s| s.id).collect();
+    let spectra_map: SpectraMap = all_spectra
+        .iter()
+        .map(|s| (s.id, s.to_generic_spectrum()))
+        .collect();
+
+    eprintln!("[compute] Sampling {num_pairs} pairs");
+    let id_pairs = pair_selection::sample_pairs(&spectrum_ids, num_pairs);
+
+    eprintln!("[compute] {} pairs ready", id_pairs.len());
+
+    sync_selected_pairs(conn, &id_pairs);
 
     (experiments, spectra_map, id_pairs)
 }
@@ -347,6 +385,28 @@ where
     if work_len == 0 {
         eprintln!("[compute] {algorithm_label}: nothing to compute");
         return 0;
+    }
+
+    // Per-implementation skip check.
+    let existing: i64 = crate::schema::results::table
+        .filter(crate::schema::results::implementation_id.eq(impl_id))
+        .select(diesel::dsl::count_star())
+        .first(conn)
+        .expect("failed to count existing results");
+    if existing == work_len as i64 {
+        eprintln!("[compute] {algorithm_label}: {existing} results cached, skipping");
+        return 0;
+    }
+    if existing > 0 {
+        eprintln!(
+            "[compute] {algorithm_label}: partial results ({existing}/{work_len}), clearing and recomputing"
+        );
+        diesel::delete(
+            crate::schema::results::table
+                .filter(crate::schema::results::implementation_id.eq(impl_id)),
+        )
+        .execute(conn)
+        .expect("failed to clear partial results");
     }
 
     let pb = ProgressBar::new(work_len as u64);
