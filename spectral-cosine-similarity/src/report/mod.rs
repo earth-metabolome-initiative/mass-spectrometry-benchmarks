@@ -97,6 +97,16 @@ fn spectra_used_in_results_count(conn: &mut SqliteConnection) -> i64 {
     .n
 }
 
+fn pairs_in_results_count(conn: &mut SqliteConnection) -> i64 {
+    sql_query(
+        "SELECT COUNT(*) AS n
+         FROM (SELECT DISTINCT left_id, right_id FROM results)",
+    )
+    .get_result::<CountRow>(conn)
+    .expect("failed to count pairs in results")
+    .n
+}
+
 fn total_spectra_count(conn: &mut SqliteConnection) -> i64 {
     sql_query("SELECT COUNT(*) AS n FROM spectra")
         .get_result::<CountRow>(conn)
@@ -246,6 +256,7 @@ pub fn generate(conn: &mut SqliteConnection, cfg: &ReportConfig) -> ReportArtifa
     fs::create_dir_all(&cfg.output_dir).expect("failed to create output directory");
     let total_spectra = total_spectra_count(conn);
     let spectra_used = spectra_used_in_results_count(conn);
+    let pairs_count = pairs_in_results_count(conn);
 
     eprintln!("[report] Loading aggregated result data");
     let timing_rows = load_timing_aggregate_rows(conn);
@@ -266,7 +277,7 @@ pub fn generate(conn: &mut SqliteConnection, cfg: &ReportConfig) -> ReportArtifa
         rmse_chart = omit_empty_buckets(rmse_chart);
     }
 
-    let run_scope = format!(" (Spectra used: {spectra_used})");
+    let run_scope = format!(" (Spectra used: {spectra_used}, Pairs: {pairs_count})");
     timing_chart.title.push_str(&run_scope);
     rmse_chart.title.push_str(&run_scope);
 
@@ -288,7 +299,8 @@ pub fn generate(conn: &mut SqliteConnection, cfg: &ReportConfig) -> ReportArtifa
     if cfg.prune_empty_buckets {
         correlation_chart = omit_empty_buckets(correlation_chart);
     }
-    let corr_scope = format!(" (Spectra used: {spectra_used})");
+    let n_pairs = correlation_stats.first().map_or(0, |s| s.n_pairs);
+    let corr_scope = format!(" (Spectra used: {spectra_used}, Pairs: {n_pairs})");
     correlation_chart.title.push_str(&corr_scope);
 
     let correlation_path = cfg.output_dir.join(&cfg.artifact_names.correlation_svg);
@@ -445,7 +457,7 @@ mod tests {
         assert!(markdown.contains("Spectra used in results: `0`"));
         assert!(markdown.contains("## Timing by Peak Count"));
         assert!(markdown.contains("## RMSE vs Reference by Peak Count"));
-        assert!(markdown.contains("Spectra used: 0"));
+        assert!(markdown.contains("Spectra used: 0, Pairs: 0"));
         assert!(markdown.contains("_No data available._"));
         assert!(markdown.contains("## Correlation"));
     }
