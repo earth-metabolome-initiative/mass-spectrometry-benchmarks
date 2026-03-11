@@ -28,18 +28,41 @@ from skfp.fingerprints import (
 from tqdm import tqdm
 
 FINGERPRINT_CONFIGS: list[tuple[str, Any, dict[str, object]]] = [
-    ("ecfp", ECFPFingerprint(fp_size=2048, radius=2, n_jobs=-1),
-     {"fp_size": 2048, "radius": 2}),
-    ("fcfp", ECFPFingerprint(fp_size=2048, radius=2, use_pharmacophoric_invariants=True, n_jobs=-1),
-     {"fp_size": 2048, "radius": 2, "pharmacophoric": True}),
-    ("maccs", MACCSFingerprint(n_jobs=-1),
-     {"fp_size": 166}),
-    ("rdkit", RDKitFingerprint(fp_size=2048, n_jobs=-1),
-     {"fp_size": 2048}),
-    ("atompair", AtomPairFingerprint(fp_size=2048, n_jobs=-1),
-     {"fp_size": 2048}),
-    ("map", MAPFingerprint(fp_size=2048, n_jobs=-1),
-     {"fp_size": 2048}),
+    (
+        "ecfp",
+        ECFPFingerprint(fp_size=2048, radius=2, n_jobs=-1),
+        {"fp_size": 2048, "radius": 2},
+    ),
+    (
+        "fcfp",
+        ECFPFingerprint(
+            fp_size=2048,
+            radius=2,
+            use_pharmacophoric_invariants=True,
+            n_jobs=-1,
+        ),
+        {"fp_size": 2048, "radius": 2, "pharmacophoric": True},
+    ),
+    (
+        "maccs",
+        MACCSFingerprint(n_jobs=-1),
+        {"fp_size": 166},
+    ),
+    (
+        "rdkit",
+        RDKitFingerprint(fp_size=2048, n_jobs=-1),
+        {"fp_size": 2048},
+    ),
+    (
+        "atompair",
+        AtomPairFingerprint(fp_size=2048, n_jobs=-1),
+        {"fp_size": 2048},
+    ),
+    (
+        "map",
+        MAPFingerprint(fp_size=2048, n_jobs=-1),
+        {"fp_size": 2048},
+    ),
 ]
 
 
@@ -105,7 +128,7 @@ def quality_filter_peaks(
     if len(mzs) > 1 and np.any(np.diff(mzs) == 0.0):
         return None
 
-    return list(zip(mzs.tolist(), intensities.tolist()))
+    return list(zip(mzs.tolist(), intensities.tolist(), strict=True))
 
 
 def main() -> None:
@@ -205,7 +228,8 @@ def main() -> None:
         fp_algo_ids: dict[str, int] = {}
         for name, _calc, params in FINGERPRINT_CONFIGS:
             cur.execute(
-                "INSERT OR IGNORE INTO fingerprint_algorithms (name, params) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO fingerprint_algorithms "
+                "(name, params) VALUES (?, ?)",
                 (name, json.dumps(params, sort_keys=True)),
             )
             cur.execute(

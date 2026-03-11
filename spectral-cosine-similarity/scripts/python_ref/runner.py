@@ -88,7 +88,7 @@ def run_algorithm(
             n_warmup = int(params["n_warmup"])
             n_reps = int(params["n_reps"])
 
-            # Warmup once per (implementation, experiment) using a representative subset.
+            # Warm up once per run using a representative subset.
             warmup_pairs = id_pairs[:GLOBAL_WARMUP_PAIR_SAMPLE]
             for _ in range(n_warmup):
                 for left_id, right_id in warmup_pairs:
