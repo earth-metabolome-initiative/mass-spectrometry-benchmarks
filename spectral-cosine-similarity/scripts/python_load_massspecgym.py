@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import sqlite3
 import sys
-
-import json
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -27,7 +27,7 @@ from skfp.fingerprints import (
 )
 from tqdm import tqdm
 
-FINGERPRINT_CONFIGS: list[tuple[str, object, dict[str, object]]] = [
+FINGERPRINT_CONFIGS: list[tuple[str, Any, dict[str, object]]] = [
     ("ecfp", ECFPFingerprint(fp_size=2048, radius=2, n_jobs=-1),
      {"fp_size": 2048, "radius": 2}),
     ("fcfp", ECFPFingerprint(fp_size=2048, radius=2, use_pharmacophoric_invariants=True, n_jobs=-1),
@@ -136,7 +136,7 @@ def main() -> None:
 
     print("[load_massspecgym] Loading Mass Spec Gym dataset...", file=sys.stderr)
     import pandas as pd
-    from huggingface_hub import hf_hub_download  # type: ignore[import-untyped]
+    from huggingface_hub import hf_hub_download
 
     tsv_path: str = hf_hub_download(
         repo_id="roman-bushuiev/MassSpecGym",
@@ -226,8 +226,8 @@ def main() -> None:
             for i, ik in enumerate(
                 tqdm(inchikeys_list, desc=f"Inserting {name} fingerprints")
             ):
-                mol_id = molecule_cache.get(ik)
-                if mol_id is None:
+                fingerprint_molecule_id = molecule_cache.get(ik)
+                if fingerprint_molecule_id is None:
                     continue
                 fp_bits: NDArray[np.uint8] = fp_matrix[i].astype(np.uint8)
                 fp_bytes = np.packbits(fp_bits).tobytes()
@@ -235,7 +235,7 @@ def main() -> None:
                     "INSERT OR IGNORE INTO fingerprints "
                     "(molecule_id, fingerprint_algorithm_id, fingerprint) "
                     "VALUES (?, ?, ?)",
-                    (mol_id, algo_id, fp_bytes),
+                    (fingerprint_molecule_id, algo_id, fp_bytes),
                 )
             conn.commit()
 
@@ -281,8 +281,8 @@ def main() -> None:
 
         # Look up molecule (skip spectra without a known molecule)
         ik = str(row["inchikey"]).strip() if "inchikey" in row.index else ""
-        mol_id: int | None = molecule_cache.get(ik) if ik else None
-        if mol_id is None:
+        molecule_id: int | None = molecule_cache.get(ik) if ik else None
+        if molecule_id is None:
             skipped_quality += 1
             continue
 
@@ -309,7 +309,7 @@ def main() -> None:
                 precursor_mz,
                 len(peaks),
                 peaks_json,
-                mol_id,
+                molecule_id,
             ),
         )
         if cur.rowcount > 0:

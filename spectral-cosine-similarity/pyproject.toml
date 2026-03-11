@@ -28,5 +28,5 @@ files = ["scripts"]
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["matchms", "matchms.*", "ms_entropy", "tqdm", "huggingface_hub", "skfp", "skfp.*"]
+module = ["matchms", "matchms.*", "ms_entropy", "tqdm", "huggingface_hub", "pandas", "pandas.*", "skfp", "skfp.*"]
 ignore_missing_imports = true
