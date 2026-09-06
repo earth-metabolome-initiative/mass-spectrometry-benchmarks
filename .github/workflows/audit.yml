@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "0 8 * * 1"
 
+permissions:
+  contents: read
+
 jobs:
   cargo-audit:
     name: cargo-audit
@@ -13,7 +16,7 @@ jobs:
       run:
         working-directory: spectral-cosine-similarity
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
