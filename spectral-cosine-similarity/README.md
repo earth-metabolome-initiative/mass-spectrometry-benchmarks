@@ -7,7 +7,7 @@ Benchmark pipeline comparing spectral similarity implementations for mass spectr
 
 ## Prerequisites
 
-- **Rust** (nightly toolchain)
+- **Rust** (stable toolchain with `rustfmt` and `Clippy`)
 - **[uv](https://docs.astral.sh/uv/)** for managing the Python environment
 - Python packages `matchms` and `ms_entropy` (install with `uv sync` in this directory)
 
