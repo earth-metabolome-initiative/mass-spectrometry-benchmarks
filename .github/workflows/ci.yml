@@ -21,7 +21,7 @@ permissions:
 jobs:
   rust-quality:
     name: Rust quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: spectral-cosine-similarity
@@ -44,7 +44,7 @@ jobs:
 
   python-quality:
     name: Python quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: spectral-cosine-similarity
