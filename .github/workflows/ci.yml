@@ -21,7 +21,7 @@ permissions:
 jobs:
   rust-quality:
     name: Rust quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: spectral-cosine-similarity
@@ -44,7 +44,7 @@ jobs:
 
   python-quality:
     name: Python quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     defaults:
       run:
         working-directory: spectral-cosine-similarity
@@ -53,6 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          python-version: "3.12"
           enable-cache: true
       - name: Sync dependencies
         run: uv sync --locked
